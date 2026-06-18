@@ -1,0 +1,16 @@
+Pacman,Ghost,Runs,Win Rate (%),Wins,Losses,Draws,Avg Steps,Std Dev
+example_student,example_student,50,100.0,50,0,0,25.44,14.66
+example_student,gemini_astar,50,16.0,8,42,0,170.72,67.77
+example_student,minimax,50,6.0,3,47,0,190.24,39.03
+gemini_astar,example_student,50,100.0,50,0,0,7.84,1.8
+gemini_astar,gemini_astar,50,100.0,50,0,0,10,0.0
+gemini_astar,minimax,50,100.0,50,0,0,10,0.0
+gemini_astar,11,50,100.0,50,0,0,8,0.0
+11,minimax,50,100.0,50,0,0,10,0.0
+example_student,11,50,86.0,43,7,0,46.4,63.05
+gemini_astar,minimax,50,100.0,50,0,0,10,0.0
+minimax,example_student,50,74.0,37,13,0,58.68,84.64
+minimax,example_student,50,100.0,50,0,0,8.96,2.26
+minimax,gemini_astar,50,100.0,50,0,0,10,0.0
+minimax,minimax,50,100.0,50,0,0,10,0.0
+minimax,11,50,100.0,50,0,0,8,0.0
