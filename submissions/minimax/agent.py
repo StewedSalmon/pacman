@@ -27,45 +27,55 @@ class PacmanAgent(BasePacmanAgent):
         self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
+        self.valid_tiles = {}
+        self.map_BFS_cache = {}
         
-    def BFS(self, map_state: np.ndarray, start: tuple, goal: tuple) -> list:
-        """Perform BFS to find the first move towards goal"""
-        queue = [(start, [])]
-        visited = set()
+    def get_BFS_map(self, start: tuple):
+        """Retrieves or calculates BFS map from start position"""
+        from collections import deque
+        if start in self.map_BFS_cache:
+            return self.map_BFS_cache[start]
+        
+        distances = {start: 0}
+        parent = {start: None}
+        queue = deque([start])
         while queue:
-            current, path = queue.pop(0)
-            if current == goal:
-                return path
-            
-            if current in visited:
-                continue
-            visited.add(current)
-            
+            current = queue.popleft()
             for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
                 x, y = move.value
-                next_pos = (current[0] + x, current[1] + y)
-                
-                if self._is_valid_position(next_pos, map_state) and next_pos not in visited:
-                    queue.append((next_pos, path + [move]))
-                    
-        return [] # no path found
+                next = (current[0] + x, current[1] + y)
+                if self.is_valid_position_precomputed(next) and next not in distances:
+                    distances[next] = distances[current] + 1
+                    parent[next] = (current, move)
+                    queue.append(next)
+        self.map_BFS_cache[start] = (distances, parent)
+        return self.map_BFS_cache[start]
     
     def minimax(self, ghost_position: tuple, pacman_position: tuple, map_state: np.ndarray, depth: int, alpha: int, beta: int, pacman_turn: bool):
         # base case
         if ghost_position == pacman_position:
            return 0 - depth
         if depth == 0: 
-            # eval using BFS
-            path = self.BFS(map_state, pacman_position, ghost_position)
-            if not path:
-                return float('inf') # no path means ghost is trapped, best for pacman
-            pacman_ticks = self.pacman_tick(path)
-            return (pacman_ticks * 10) + len(path) # tie breaker: prefer shorter paths if same ticks
+            distances, parent = self.get_BFS_map(pacman_position)
+            if ghost_position not in distances:
+                return float('inf')
+            
+            # reconstruct path
+            path = []
+            current = ghost_position
+            while current != pacman_position:
+                previous, move_taken = parent[current]
+                path.append(move_taken)
+                current = previous
+            path.reverse() 
+            # calculate ticks
+            ticks = self.pacman_tick(path)
+            return (ticks * 10) + len(path) # use path length as tiebreaker
         
         # minimizing for pacman
         if pacman_turn:
             min_eval = float('inf')
-            pacman_next_positions = self.get_sprint_options(pacman_position, map_state)
+            pacman_next_positions = self.get_sprint_options(pacman_position)
             for _, _, next_pacman_pos in pacman_next_positions:
                 eval = self.minimax(ghost_position, next_pacman_pos, map_state, depth - 1, alpha, beta, False)
                 min_eval = min(min_eval, eval)
@@ -80,13 +90,26 @@ class PacmanAgent(BasePacmanAgent):
             for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
                 next_ghost_pos = (ghost_position[0] + move.value[0], ghost_position[1] + move.value[1])
                 
-                if self._is_valid_position(next_ghost_pos, map_state):
+                if self.is_valid_position_precomputed(next_ghost_pos):
                     eval = self.minimax(next_ghost_pos, pacman_position, map_state, depth - 1, alpha, beta, True)
                     max_eval = max(max_eval, eval)
                     alpha = max(alpha, eval)
                     if beta <= alpha:
                         break
             return max_eval
+        
+    def precompute_valid_tiles(self, map_state: np.ndarray):
+        """Precompute valid tiles for quick access during minimax."""
+        self.valid_tiles = {}
+        height, width = map_state.shape
+        for row in range(height):
+            for col in range(width):
+                if map_state[row, col] == 0:
+                    self.valid_tiles[(row, col)] = True
+    
+    def is_valid_position_precomputed(self, pos: tuple):
+        """Check if a position is valid using precomputed tiles."""
+        return pos in self.valid_tiles
     
     def pacman_tick(self, path: list) -> int:
         if not path:
@@ -106,7 +129,7 @@ class PacmanAgent(BasePacmanAgent):
             ticks += 1
         return ticks
     
-    def get_sprint_options(self, pos: tuple, map_state: np.ndarray):
+    def get_sprint_options(self, pos: tuple):
         """
         Generates all valid moves and step counts for Pacman.
         Returns a list of tuples: (Move, step_count, landing_position)
@@ -118,7 +141,7 @@ class PacmanAgent(BasePacmanAgent):
             for steps in range(1, self.pacman_speed + 1):
                 next_pos = (current_pos[0] + delta_row, current_pos[1] + delta_col)
                 # Stop projecting if we hit a wall
-                if not self._is_valid_position(next_pos, map_state):
+                if not self.is_valid_position_precomputed(next_pos):
                     break 
                 current_pos = next_pos
                 options.append((move, steps, current_pos))
@@ -140,13 +163,16 @@ class PacmanAgent(BasePacmanAgent):
             # No information about enemy - explore randomly
             return self._explore(my_position, map_state)
         
+        if len(self.valid_tiles) == 0:
+            self.precompute_valid_tiles(map_state)
+        
         best_move = Move.STAY
         best_steps = 1
         min_eval = float('inf')
         alpha = -float('inf')
         beta = float('inf')
         
-        possible_moves = self.get_sprint_options(my_position, map_state)
+        possible_moves = self.get_sprint_options(my_position)
         for move, steps, landing_pos in possible_moves:
             eval = self.minimax(enemy_position, landing_pos, map_state, 3, alpha, beta, False)
             if eval < min_eval:
@@ -161,7 +187,7 @@ class PacmanAgent(BasePacmanAgent):
 
     def _explore(self, my_position: tuple, map_state: np.ndarray):
         """Random exploration when enemy position is unknown."""
-        all_moves = self.get_sprint_options(my_position, map_state)
+        all_moves = self.get_sprint_options(my_position)
         if all_moves:
             move, steps, _ = random.choice(all_moves)
             if steps > 1:
@@ -179,27 +205,6 @@ class PacmanAgent(BasePacmanAgent):
         
         return map_state[row, col] == 0
 
-    def _max_valid_steps(self, pos: tuple, move: Move, map_state: np.ndarray, desired_steps: int) -> int:
-        steps = 0
-        max_steps = min(self.pacman_speed, max(1, desired_steps))
-        current = pos
-        for _ in range(max_steps):
-            delta_row, delta_col = move.value
-            next_pos = (current[0] + delta_row, current[1] + delta_col)
-            if not self._is_valid_position(next_pos, map_state):
-                break
-            steps += 1
-            current = next_pos
-        return steps
-
-    def _desired_steps(self, move: Move, row_diff: int, col_diff: int) -> int:
-        if move in (Move.UP, Move.DOWN):
-            return abs(row_diff)
-        if move in (Move.LEFT, Move.RIGHT):
-            return abs(col_diff)
-        return 1
-
-
 class GhostAgent(BaseGhostAgent):
     
     def __init__(self, **kwargs):
@@ -210,46 +215,61 @@ class GhostAgent(BaseGhostAgent):
         self.name = "Minimax Ghost"
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
-        self.pacman_speed = 2
-    
-    def BFS(self, map_state: np.ndarray, start: tuple, goal: tuple) -> list:
-        """Perform BFS to find the first move towards goal"""
-        queue = [(start, [])]
-        visited = set()
+        self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
+        self.valid_tiles = {}
+        self.map_BFS_cache = {}
+        
+    def get_BFS_map(self, start: tuple):
+        """Retrieves or calculates BFS map from start positiom"""
+        from collections import deque
+        if start in self.map_BFS_cache:
+            return self.map_BFS_cache[start]
+        
+        distances = {start: 0}
+        parent = {start: None}
+        queue = deque([start])
         while queue:
-            current, path = queue.pop(0)
-            if current == goal:
-                return path
-            
-            if current in visited:
-                continue
-            visited.add(current)
-            
+            current = queue.popleft()
             for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
                 x, y = move.value
-                next_pos = (current[0] + x, current[1] + y)
-                
-                if self._is_valid_position(next_pos, map_state) and next_pos not in visited:
-                    queue.append((next_pos, path + [move]))
-                    
-        return [] # no path found
+                next = (current[0] + x, current[1] + y)
+                if self.is_valid_position_precomputed(next) and next not in distances:
+                    distances[next] = distances[current] + 1
+                    parent[next] = (current, move)
+                    queue.append(next)
+        self.map_BFS_cache[start] = (distances, parent)
+        return self.map_BFS_cache[start]
     
     def minimax(self, ghost_position: tuple, pacman_position: tuple, map_state: np.ndarray, depth: int, alpha: int, beta: int, ghost_turn: bool):
         # base case
-        if depth == 0 or ghost_position == pacman_position:
-            # eval using BFS
-            path = self.BFS(map_state, ghost_position, pacman_position)
-            if not path:
-                return 0
-            pacman_ticks = self.pacman_tick(path)
-            return (pacman_ticks * 10) + len(path) # tie breaker: prefer shorter paths if same ticks
+        if ghost_position == pacman_position:
+            return -1000 + depth
+        
+        if depth == 0:
+            distances, parent = self.get_BFS_map(pacman_position)
+            if ghost_position not in distances:
+                return float('inf')
+            
+            # reconstruct path
+            path = []
+            current = ghost_position
+            while current != pacman_position:
+                previous, move_taken = parent[current]
+                path.append(move_taken)
+                current = previous
+            path.reverse()
+            
+            # calculate ticks
+            ticks = self.pacman_tick(path)
+            return (ticks * 10) + len(path) # use path length as tiebreaker
+        
         # maximizing for ghost
         if ghost_turn:
             max_eval = -float('inf')
             for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
                 next_ghost_pos = (ghost_position[0] + move.value[0], ghost_position[1] + move.value[1])
                 
-                if self._is_valid_position(next_ghost_pos, map_state):
+                if self.is_valid_position_precomputed(next_ghost_pos):
                     eval = self.minimax(next_ghost_pos, pacman_position, map_state, depth - 1, alpha, beta, False)
                     max_eval = max(max_eval, eval)
                     alpha = max(alpha, eval)
@@ -268,6 +288,19 @@ class GhostAgent(BaseGhostAgent):
                 if beta <= alpha:
                     break
             return min_eval
+        
+    def precompute_valid_tiles(self, map_state: np.ndarray):
+        """Precompute valid tiles for quick access during minimax."""
+        self.valid_tiles = {}
+        height, width = map_state.shape
+        for row in range(height):
+            for col in range(width):
+                if map_state[row, col] == 0:
+                    self.valid_tiles[(row, col)] = True
+    
+    def is_valid_position_precomputed(self, pos: tuple):
+        """Check if a position is valid using precomputed tiles."""
+        return pos in self.valid_tiles
         
     def pacman_tick(self, path: list) -> int:
         if not path:
@@ -298,7 +331,7 @@ class GhostAgent(BaseGhostAgent):
             for step in range(self.pacman_speed):
                 next_position = (current_position[0] + row, current_position[1] + col)
                 
-                if not self._is_valid_position(next_position, map_state):
+                if not self.is_valid_position_precomputed(next_position):
                     break
                 current_position = next_position
                 
@@ -321,6 +354,9 @@ class GhostAgent(BaseGhostAgent):
             # No information about enemy - move randomly
             return self._random_move(my_position, map_state)
         
+        if len(self.valid_tiles) == 0:
+            self.precompute_valid_tiles(map_state)
+        
         best_move = Move.STAY
         max_eval = -float('inf')
         alpha = -float('inf')
@@ -329,7 +365,7 @@ class GhostAgent(BaseGhostAgent):
         for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
             next_pos = (my_position[0] + move.value[0], my_position[1] + move.value[1])
             
-            if self._is_valid_position(next_pos, map_state):
+            if self.is_valid_position_precomputed(next_pos):
                 eval = self.minimax(next_pos, threat, map_state, 3, alpha, beta, False)
                 
                 if eval > max_eval:
@@ -339,26 +375,3 @@ class GhostAgent(BaseGhostAgent):
                 alpha = max(alpha, eval)
         
         return best_move
-
-    def _random_move(self, my_position: tuple, map_state: np.ndarray) -> Move:
-        """Random movement when enemy position is unknown."""
-        all_moves = [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
-        random.shuffle(all_moves)
-        
-        for move in all_moves:
-            delta_row, delta_col = move.value
-            new_pos = (my_position[0] + delta_row, my_position[1] + delta_col)
-            if self._is_valid_position(new_pos, map_state):
-                return move
-        
-        return Move.STAY
-    
-    def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
-        """Check if a position is valid (not a wall and within bounds)."""
-        row, col = pos
-        height, width = map_state.shape
-        
-        if row < 0 or row >= height or col < 0 or col >= width:
-            return False
-        
-        return map_state[row, col] == 0
