@@ -10,7 +10,7 @@ from agent_interface import GhostAgent as BaseGhostAgent
 from environment import Move
 import numpy as np
 import random
-
+from collections import deque
 
 class PacmanAgent(BasePacmanAgent):
     """
@@ -32,7 +32,6 @@ class PacmanAgent(BasePacmanAgent):
         
     def get_BFS_map(self, start: tuple):
         """Retrieves or calculates BFS map from start position"""
-        from collections import deque
         if start in self.map_BFS_cache:
             return self.map_BFS_cache[start]
         
@@ -161,7 +160,7 @@ class PacmanAgent(BasePacmanAgent):
         
         if target is None:
             # No information about enemy - explore randomly
-            return self._explore(my_position, map_state)
+            return self._explore(my_position)
         
         if len(self.valid_tiles) == 0:
             self.precompute_valid_tiles(map_state)
@@ -185,7 +184,7 @@ class PacmanAgent(BasePacmanAgent):
             return (best_move, best_steps)
         return (best_move, 1)
 
-    def _explore(self, my_position: tuple, map_state: np.ndarray):
+    def _explore(self, my_position: tuple):
         """Random exploration when enemy position is unknown."""
         all_moves = self.get_sprint_options(my_position)
         if all_moves:
@@ -218,10 +217,10 @@ class GhostAgent(BaseGhostAgent):
         self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
         self.valid_tiles = {}
         self.map_BFS_cache = {}
+        self.dead_ends = set()
         
     def get_BFS_map(self, start: tuple):
         """Retrieves or calculates BFS map from start positiom"""
-        from collections import deque
         if start in self.map_BFS_cache:
             return self.map_BFS_cache[start]
         
@@ -243,7 +242,7 @@ class GhostAgent(BaseGhostAgent):
     def minimax(self, ghost_position: tuple, pacman_position: tuple, map_state: np.ndarray, depth: int, alpha: int, beta: int, ghost_turn: bool):
         # base case
         if ghost_position == pacman_position:
-            return -1000 + depth
+            return -1000 - depth
         
         if depth == 0:
             distances, parent = self.get_BFS_map(pacman_position)
@@ -259,14 +258,17 @@ class GhostAgent(BaseGhostAgent):
                 current = previous
             path.reverse()
             
-            # calculate ticks
+            # calculate score
             ticks = self.pacman_tick(path)
-            return (ticks * 10) + len(path) # use path length as tiebreaker
+            score = (ticks * 10) + len(path) # use path length as tiebreaker
+            if ghost_position in self.dead_ends:
+                score -= 0.5
+            return score
         
         # maximizing for ghost
         if ghost_turn:
             max_eval = -float('inf')
-            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
                 next_ghost_pos = (ghost_position[0] + move.value[0], ghost_position[1] + move.value[1])
                 
                 if self.is_valid_position_precomputed(next_ghost_pos):
@@ -292,12 +294,37 @@ class GhostAgent(BaseGhostAgent):
     def precompute_valid_tiles(self, map_state: np.ndarray):
         """Precompute valid tiles for quick access during minimax."""
         self.valid_tiles = {}
+        self.dead_ends = set()
+        
+        # map all valid tiles
         height, width = map_state.shape
         for row in range(height):
             for col in range(width):
                 if map_state[row, col] == 0:
                     self.valid_tiles[(row, col)] = True
-    
+                    
+        # build adjacency graph with valid tiles
+        graph = {pos: [] for pos in self.valid_tiles}
+        for pos in self.valid_tiles:
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+                x, y = move.value
+                next_pos = (pos[0] + x, pos[1] + y)
+                if next_pos in self.valid_tiles:
+                    graph[pos].append(next_pos)
+              
+        # find dead-ends
+        initial_dead_ends = [pos for pos, neighbours in graph.items() if len(neighbours) == 1]
+        queue = deque(initial_dead_ends)
+        
+        while queue:
+            current = queue.popleft()
+            self.dead_ends.add(current)
+            
+            for neighbour in graph[current]:
+                if neighbour not in self.dead_ends:
+                    exits = sum(1 for n in graph[neighbour] if n not in self.dead_ends)
+                    if exits <= 1:
+                        queue.append(neighbour) 
     def is_valid_position_precomputed(self, pos: tuple):
         """Check if a position is valid using precomputed tiles."""
         return pos in self.valid_tiles
@@ -362,7 +389,7 @@ class GhostAgent(BaseGhostAgent):
         alpha = -float('inf')
         beta = float('inf')
         
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
             next_pos = (my_position[0] + move.value[0], my_position[1] + move.value[1])
             
             if self.is_valid_position_precomputed(next_pos):
@@ -375,3 +402,16 @@ class GhostAgent(BaseGhostAgent):
                 alpha = max(alpha, eval)
         
         return best_move
+    
+    def _random_move(self, my_position: tuple, map_state: np.ndarray) -> Move:
+        """Random movement when enemy position is unknown."""
+        all_moves = [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
+        random.shuffle(all_moves)
+        
+        for move in all_moves:
+            delta_row, delta_col = move.value
+            new_pos = (my_position[0] + delta_row, my_position[1] + delta_col)
+            if self._is_valid_position(new_pos, map_state):
+                return move
+        
+        return Move.STAY
