@@ -463,14 +463,14 @@ class GhostAgent(BaseGhostAgent):
         gr, gc = ghost_pos
         pr, pc = pacman_pos
 
-        if gr == pr and abs(gc - pc) <= 2:
+        if gr == pr and abs(gc - pc) <= 3:
             step = 1 if gc > pc else -1
             for c in range(pc + step, gc + step, step):
                 if map_state[pr, c] == 1:
                     return False
             return True
 
-        if gc == pc and abs(gr - pr) <= 2:
+        if gc == pc and abs(gr - pr) <= 3:
             step = 1 if gr > pr else -1
             for r in range(pr + step, gr + step, step):
                 if map_state[r, pc] == 1:
