@@ -19,6 +19,8 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
     wins = 0
     losses = 0
     draws = 0
+    min_step = 200
+    max_step = 0
     steps_list = []
 
     # Optional: Suppress standard print statements from the framework to keep the console clean
@@ -53,8 +55,13 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
             losses += 1
         else:
             draws += 1
-            
-        steps_list.append(stats['total_steps'])
+        
+        steps = stats['total_steps']
+        steps_list.append(steps)
+        if steps < min_step:
+            min_step = steps
+        if steps > max_step:
+            max_step = steps
 
     # Restore console printing if you suppressed it
     # sys.stdout = old_stdout
@@ -79,8 +86,8 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
             writer = csv.writer(file)
             if not file_exists:
                 # Write headers if the file is brand new
-                writer.writerow(['Pacman', 'Ghost', 'Runs', 'Win Rate (%)', 'Wins', 'Losses', 'Draws', 'Avg Steps', 'Std Dev'])
-            writer.writerow([pacman_id, ghost_id, num_runs, round(win_rate, 2), wins, losses, draws, round(avg_steps, 2), round(std_dev, 2)])
+                writer.writerow(['Pacman', 'Ghost', 'Runs', 'Win Rate (%)', 'Wins', 'Losses', 'Draws', 'Avg Steps', 'Max', 'Min', 'Std Dev'])
+            writer.writerow([pacman_id, ghost_id, num_runs, round(win_rate, 2), wins, losses, draws, round(avg_steps, 2), max_step, min_step, round(std_dev, 2)])
         print("\n Results saved to benchmark_results.csv")
 
 if __name__ == "__main__":
