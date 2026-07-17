@@ -1,22 +1,3 @@
-"""
-Template for student agent implementation.
-
-INSTRUCTIONS:
-1. Copy this file to submissions/<your_student_id>/agent.py
-2. Implement the PacmanAgent and/or GhostAgent classes
-3. Replace the simple logic with your search algorithm
-4. Test your agent using: python arena.py --seek <your_id> --hide example_student
-
-IMPORTANT:
-- Do NOT change the class names (PacmanAgent, GhostAgent)
-- Do NOT change the method signatures (step, __init__)
-- Pacman step must return either a Move or a (Move, steps) tuple where
-    1 <= steps <= pacman_speed (provided via kwargs)
-- Ghost step must return a Move enum value
-- You CAN add your own helper methods
-- You CAN import additional Python standard libraries
-"""
-
 import sys
 from pathlib import Path
 
@@ -29,352 +10,602 @@ from agent_interface import GhostAgent as BaseGhostAgent
 from environment import Move
 import numpy as np
 
+import random
+import time 
+import heapq #For priority queue
+from collections import deque #For BFS 
 
+#This pacman using A* algorithm and intercept method chase down enemy.
 class PacmanAgent(BasePacmanAgent):
-    """
-    Pacman (Seeker) Agent - Goal: Catch the Ghost
-    
-    Implement your search algorithm to find and catch the ghost.
-    Suggested algorithms: BFS, DFS, A*, Greedy Best-First
-    """
-    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.name = "YoruNiKakeru Pacman"
         self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
-        # TODO: Initialize any data structures you need
-        # Examples:
-        # - self.path = []  # Store planned path
-        # - self.visited = set()  # Track visited positions
-        # - self.name = "Your Agent Name"
-        self.name = "BFS Pacman"
-    
-    def step(self, map_state: np.ndarray, 
-             my_position: tuple, 
-             enemy_position: tuple,
-             step_number: int):
-        """
-        Decide the next move.
-        
-        Args:
-            map_state: 2D numpy array where 1=wall, 0=empty
-            my_position: Your current (row, col)
-            enemy_position: Ghost's current (row, col)
-            step_number: Current step number (starts at 1)
-            
-        Returns:
-            Move or (Move, steps): Direction to move (optionally with step count)
-        """
-        # TODO: Implement your search algorithm here
-        # =========== DEBUG =================
-        # print(f"Step {step_number}: My pos={my_position}, Enemy pos={enemy_position}")
-        # ===================================
-    
-        path = self.bfs(my_position, enemy_position, map_state)
 
-        # =========== DEBUG =================
-        # print(f"  Found path: {[m.name for m in path[:5]]}")  # First 5 moves
-        # ===================================
+        # Ghost position
+        self.last_known_ghost_pos = None
+        self.ghost_velocity = (0, 0)       #Estimated ghost's movement direction
+        self.last_ghost_update_step = -1
 
+        # Map
+        self.junctions = []                
+        self.dead_ends = []                
+        self.map_analyzed = False
 
-        # Ko tìm được đường đi (hoặc BFS trả [STAY]) -> đứng yên
-        if not path or path[0] == Move.STAY:
-            return Move.STAY
+        self.current_intercept = None      
+        self.intercept_confirmed_step = -1
 
-        first_move = path[0]
-        if self.pacman_speed <= 1: # Nếu chỉ đi được 1 bước, trả luôn move đầu tiên (path[0], 1)
-            return first_move
+    #Find all junctions and dead_ends on map in one time
+    def analyze_map(self, map_state):
+        rows, cols = map_state.shape
+        for r in range(rows):
+            for c in range(cols):
+                if map_state[r][c] != 0:
+                    continue
+                neighbors = self._get_neighbors((r, c), map_state)
+                deg = len(neighbors)
+                if deg >= 3:
+                    self.junctions.append((r, c))
+                elif deg == 1:
+                    self.dead_ends.append((r, c))
 
-        # Khi chạy test sẽ chỉnh pacman_speed = 2, nhưng đề phòng trường hợp speed > 2 nên code chung luôn
-        # Nếu đầu path có các move trùng nhau liên tiếp, gộp thành (Move, steps)
-        # với steps <= pacman_speed và không đi xuyên tường (check bằng _max_valid_steps).
-        max_consider = min(len(path), self.pacman_speed)
-        steps = 1
-        while steps < max_consider and path[steps] == first_move:
-            steps += 1
-
-        steps = self._max_valid_steps(my_position, first_move, map_state, steps)
-        if steps > 1:
-            return (first_move, steps)
-
-        return first_move
-
-    
-    
-    # Algorithm
-
-    def bfs(self, start, goal, map_state):
-        """
-        Find shortest path from start to goal using BFS.
-        
-        Returns:
-            List of Move enums representing the path, or [Move.STAY] if no path
-        """
-        from collections import deque
-        
-        # Queue stores (position, path_to_reach_it)
-        queue = deque([(start, [])])
-        visited = {start}
-        
-        while queue:
-            current_pos, path = queue.popleft()
-            
-            # Found the goal!
-            if current_pos == goal:
-                return path
-            
-            # Explore neighbors
-            for next_pos, move in self._get_neighbors(current_pos, map_state):
-                if next_pos not in visited:
-                    visited.add(next_pos)
-                    queue.append((next_pos, path + [move]))
-        
-        # No path found
-        return [Move.STAY]
-
-
-
-    # Helper methods (you can add more)
-    
-    def _choose_action(self, pos: tuple, moves, map_state: np.ndarray, desired_steps: int):
-        for move in moves:
-            max_steps = min(self.pacman_speed, max(1, desired_steps))
-            steps = self._max_valid_steps(pos, move, map_state, max_steps)
-            if steps > 0:
-                return (move, steps)
-        return None
-
-    def _max_valid_steps(self, pos: tuple, move: Move, map_state: np.ndarray, max_steps: int) -> int:
-        steps = 0
-        current = pos
-        for _ in range(max_steps):
-            delta_row, delta_col = move.value
-            next_pos = (current[0] + delta_row, current[1] + delta_col)
-            if not self._is_valid_position(next_pos, map_state):
-                break
-            steps += 1
-            current = next_pos
-        return steps
-    
-    def _is_valid_move(self, pos: tuple, move: Move, map_state: np.ndarray) -> bool:
-        """Check if a move from pos is valid for at least one step."""
-        return self._max_valid_steps(pos, move, map_state, 1) == 1
-    
-    def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
-        """Check if a position is valid (not a wall and within bounds)."""
-        row, col = pos
-        height, width = map_state.shape
-        
-        if row < 0 or row >= height or col < 0 or col >= width:
-            return False
-        
-        return map_state[row, col] == 0
-
-    def _apply_move(self, pos, move):
-        """Apply a move to a position, return new position."""
-        delta_row, delta_col = move.value
-        return (pos[0] + delta_row, pos[1] + delta_col)
-
+    #Find all possible cells nearby
     def _get_neighbors(self, pos, map_state):
-        """Get all valid neighboring positions and their moves."""
-        neighbors = []
-        
+        result = []
         for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
-            next_pos = self._apply_move(pos, move)
-            if self._is_valid_position(next_pos, map_state):
-                neighbors.append((next_pos, move))
-        
-        return neighbors
+            dr, dc = move.value
+            npos = (pos[0] + dr, pos[1] + dc)
+            if self._is_valid_position(npos, map_state):
+                result.append(npos)
+        return result
 
-    def _manhattan_distance(self, pos1, pos2):
-        """Calculate Manhattan distance between two positions."""
-        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-
-# Ghost agent: Uses BFS to run to the cell furthest from pacman
-# Strategy overview:
-#   1. Run BFS from pacmans position to compute distances from pacman to every reachable cell.
-#   2. Identify the cell with the maximum distance from pacman (safest)
-#   3. Filter out dead end targets (cells with only 1 exit) to avoid getting cornered.
-#   4. Pick the closest safest cell to the ghost and use BFS again to find the path from ghost to that cell.
-#   5. Before committing, do a safety check: if the intended move would place the ghost within Manhattan distance 2 of pacman, reject it.
-#   6. Fallback: pick whichever neighboring cell maximises Manhattan distance from pacman, preferring cells with more exits.
-
-class GhostAgent(BaseGhostAgent):
-    """
-    Ghost (Hider) Agent - Goal: Avoid being caught
-    
-    Implement your search algorithm to evade Pacman as long as possible.
-    Suggested algorithms: BFS (find furthest point), Minimax, Monte Carlo
-    """
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        pass
-    
-    def step(self, map_state: np.ndarray, 
-             my_position: tuple, 
-             enemy_position: tuple,
-             step_number: int) -> Move:
-        """
-        Decide the next move.
-        
-        Args:
-            map_state: 2D numpy array where 1=wall, 0=empty
-            my_position: Your current (row, col)
-            enemy_position: Pacman's current (row, col)
-            step_number: Current step number (starts at 1)
-            
-        Returns:
-            Move: One of Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY
-        """
-        return self.find_furthest_position(my_position, enemy_position, map_state)
-
-    def find_furthest_position(self, my_position, enemy_position, map_state):
-        """
-        Use BFS from enemy's position to find furthest reachable point.
-        Then navigate toward it.
-        
-        Returns:
-            Move enum to move toward furthest position
-        """
-        from collections import deque
-        
-        # 1. BFS from enemy to find distances
-        queue = deque([(enemy_position, 0)])
-        visited = {enemy_position: 0}   # Maps position -> distance from Pacman
-        
+    #Make a map with all cost to any cells
+    def bfs_cost(self, start, map_state):
+        if not self._is_valid_position(start, map_state):
+            return {}
+        rows, cols = map_state.shape
+        cost = {}
+        queue = deque()
+        cost[start] = 0
+        queue.append(start)
         while queue:
-            current, dist = queue.popleft()
-            
-            # Expand to all neighbors
-            for next_pos, _ in self._get_neighbors(current, map_state):
-                if next_pos not in visited:
-                    visited[next_pos] = dist + 1
-                    queue.append((next_pos, dist + 1))
-        
-        # 2. Find maximum distance among reachable positions
-        max_dist = -1
-        best_positions = []
-        
-        for pos, dist in visited.items():
-            if dist > max_dist:
-                max_dist = dist
-                best_positions = [pos]
-            elif dist == max_dist:
-                best_positions.append(pos)
-        
-        # 3. Filter out dead end targets to avoid getting cornered
-        safe_positions = [p for p in best_positions if self._count_exits(p, map_state) >= 2]
-        # If all max distance cells are dead ends, keep the original list as fallback
-        if not safe_positions:
-            safe_positions = best_positions
-        
-        # 4. Navigate to closest of the furthest safe positions
-        best_safety_move = Move.STAY
-        best_safety_dist = self._manhattan_distance(my_position, enemy_position)
-        
-        if safe_positions:
-            best_target = min(safe_positions, 
-                            key=lambda p: self._manhattan_distance(my_position, p))
+            cur = queue.popleft()
+            for nb in self._get_neighbors(cur, map_state):
+                if nb not in cost:
+                    cost[nb] = cost[cur] + 1
+                    queue.append(nb)
+        return cost
 
-            path = self.bfs(my_position, best_target, map_state)
+    def a_star(self, start, goal, map_state):
+        def h(p): return abs(p[0] - goal[0]) + abs(p[1] - goal[1])
+        heap = [(h(start), start)]
+        g = {start: 0}
+        parent = {}
+        while heap:
+            f, cur = heapq.heappop(heap)
+            if cur == goal:
+                return parent
+            if f > g.get(cur, 0) + h(cur):
+                continue
+            for nb in self._get_neighbors(cur, map_state):
+                ng = g[cur] + 1
+                if ng < g.get(nb, float('inf')):
+                    g[nb] = ng
+                    parent[nb] = cur
+                    heapq.heappush(heap, (ng + h(nb), nb))
+        return parent
 
-            if path:
-                intended_move = path[0]
-                next_pos = self._apply_move(my_position, intended_move)
-                
-                # 5. Safety check: only commit if not too close to pacman (Manhattan distance > 2)
-                if self._manhattan_distance(next_pos, enemy_position) > 2:
-                    # Also check the next cell isnt a dead-end when pacman is nearby
-                    if self._count_exits(next_pos, map_state) >= 2 or self._manhattan_distance(next_pos, enemy_position) > 4:
-                        return intended_move
-        
-        # 6. Fallback: greedy strategy preferring cells with more exits
-        # score = distance from pacman + bonus for having more escape routes
-        best_score = -1
-        for next_pos, move in self._get_neighbors(my_position, map_state):
-            distance = self._manhattan_distance(next_pos, enemy_position)
-            exits = self._count_exits(next_pos, map_state)
-            # Combine distance and exit count: distance matters most, exits break ties
-            score = distance * 10 + exits
+    #Make a way from goal back to start after get ways from a_star
+    def reconstruct_path(self, parent, start, goal):
+        if goal not in parent and goal != start:
+            return []
+        path = []
+        cur = goal
+        while cur != start:
+            path.append(cur)
+            cur = parent[cur]
+        path.append(start)
+        path.reverse()
+        return path
+
+    #Return path from pos start to goal, this is the function that mixes reconstruct_path and a_star for convenient 
+    def path_to(self, start, goal, map_state):
+        parent = self.a_star(start, goal, map_state)
+        return self.reconstruct_path(parent, start, goal)
+
+    #Predict all the cells that ghost maybe move in
+    def predict_ghost_positions(self, ghost_pos, pac_cost_from_ghost, map_state, steps_ahead=6):
+        reachable = {ghost_pos: 0}
+        frontier = deque([(ghost_pos, 0)])
+        while frontier:
+            pos, steps = frontier.popleft()
+            if steps >= steps_ahead:
+                continue
+            for nb in self._get_neighbors(pos, map_state):
+                if nb not in reachable:
+                    reachable[nb] = steps + 1
+                    frontier.append((nb, steps + 1))
+        return reachable
+    
+    #Estimate the ghost's direction of movement from two consecutive locations.
+    def estimate_ghost_velocity(self, ghost_pos, step_number):
+        if self.last_known_ghost_pos and self.last_ghost_update_step == step_number - 1:
+            dr = ghost_pos[0] - self.last_known_ghost_pos[0]
+            dc = ghost_pos[1] - self.last_known_ghost_pos[1]
+            dr = max(-1, min(1, dr))
+            dc = max(-1, min(1, dc))
+            self.ghost_velocity = (dr, dc)
+        return self.ghost_velocity
+    
+    #Find best intercept with the junctions and dead_ends that near ghost as close as possible
+    #And also make sure that Pacman arrive to that cell earlier than ghost
+    def find_best_intercept(self, my_pos, ghost_pos, pac_cost, ghost_cost, map_state):
+
+        best_pos = None
+        best_score = float('-inf')
+        candidates = self.junctions + self.dead_ends
+        if not candidates:
+            return ghost_pos, 0
+
+        for cand in candidates:
+            p_dist = pac_cost.get(cand)
+            g_dist = ghost_cost.get(cand)
+
+            if p_dist is None or g_dist is None:
+                continue
+
+            pac_time = p_dist / (self.pacman_speed * 1.5) # 1.5 because pac speed = 2 or = 1 if corner, so avg = 1.5
+            ghost_time = g_dist  # ghost speed = 1
+
+            if pac_time > ghost_time + 0.5:
+                continue
+
+            advantage = ghost_time - pac_time   
+            proximity = -g_dist                 
+            is_dead_end = 1 if cand in self.dead_ends else 0
+
+            score = advantage * 10 + proximity * 2 + is_dead_end * 5
+
             if score > best_score:
                 best_score = score
-                best_safety_move = move
-                
-        return best_safety_move
+                best_pos = cand
 
+        return best_pos, best_score
 
-    # Helper methods
-    def _count_exits(self, pos, map_state):
-        """Count how many valid moves exist from a position (1 = dead-end, 2+ = open)."""
-        return len(self._get_neighbors(pos, map_state))
+    #Assume Ghost is moving straight along the velocity and Pacman has the ability to intercept
+    def find_direct_intercept(self, my_pos, ghost_pos, ghost_velocity, pac_cost, map_state):
+        if ghost_velocity == (0, 0):
+            return None
 
-    def _is_dead_end(self, pos, map_state):
-        """Check if a position is a dead-end (only 1 exit)."""
-        return self._count_exits(pos, map_state) <= 1
+        dr, dc = ghost_velocity
+        best = None
+        best_dist = float('inf')
 
-    def _is_valid_move(self, pos: tuple, move: Move, map_state: np.ndarray) -> bool:
-        """Check if a move from pos is valid for at least one step."""
-        delta_row, delta_col = move.value
-        new_pos = (pos[0] + delta_row, pos[1] + delta_col)
-        return self._is_valid_position(new_pos, map_state)
-    
-    def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
-        """Check if position is valid (not wall, within bounds)."""
+        pos = ghost_pos
+        for steps in range(1, 11):
+            next_pos = (pos[0] + dr, pos[1] + dc)
+            if not self._is_valid_position(next_pos, map_state):
+                break
+            pos = next_pos
+
+            p_dist = pac_cost.get(pos)
+            if p_dist is None:
+                continue
+
+            pac_time = p_dist / (self.pacman_speed * 1.5)
+            ghost_time = steps
+
+            if pac_time <= ghost_time - 1:
+                if p_dist < best_dist:
+                    best_dist = p_dist
+                    best = pos
+
+        return best
+
+    def follow_path(self, path, my_pos):
+        if len(path) < 2:
+            return (Move.STAY, 1)
+
+        next_pos = path[1]
+        dr = next_pos[0] - my_pos[0]
+        dc = next_pos[1] - my_pos[1]
+
+        if dr > 0:   move = Move.DOWN
+        elif dr < 0: move = Move.UP
+        elif dc > 0: move = Move.RIGHT
+        else:         move = Move.LEFT
+
+        steps = 1
+        for i in range(2, len(path)):
+            dri = path[i][0] - path[i-1][0]
+            dci = path[i][1] - path[i-1][1]
+            if dri == dr and dci == dc:
+                steps += 1
+            else:
+                break
+
+        return (move, min(steps, self.pacman_speed))
+
+    def explore(self, my_pos, map_state):
+        moves = [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
+        random.shuffle(moves)
+        for move in moves:
+            steps = self._max_valid_steps(my_pos, move, map_state, self.pacman_speed)
+            if steps > 0:
+                return (move, steps)
+        return (Move.STAY, 1)
+
+    def step(self, map_state: np.ndarray, my_position: tuple, enemy_position: tuple, step_number: int):
+
+        if not self.map_analyzed:
+            self.analyze_map(map_state)
+            self.map_analyzed = True
+
+        if enemy_position is not None:
+            self.estimate_ghost_velocity(enemy_position, step_number)
+            self.last_known_ghost_pos = enemy_position
+            self.last_ghost_update_step = step_number
+            ghost_pos = enemy_position
+        elif self.last_known_ghost_pos is not None:
+            dr, dc = self.ghost_velocity
+            predicted = (self.last_known_ghost_pos[0] + dr,
+                         self.last_known_ghost_pos[1] + dc)
+            if self._is_valid_position(predicted, map_state):
+                ghost_pos = predicted
+            else:
+                ghost_pos = self.last_known_ghost_pos
+        else:
+            return self.explore(my_position, map_state)
+
+        pac_cost = self.bfs_cost(my_position, map_state)
+        ghost_cost = self.bfs_cost(ghost_pos, map_state)
+
+        ghost_real_dist = pac_cost.get(ghost_pos)
+        if ghost_real_dist is None:
+            return self.explore(my_position, map_state)
+
+        effective_speed = self.pacman_speed * 1.5
+        if ghost_real_dist <= effective_speed * 3:
+            path = self.path_to(my_position, ghost_pos, map_state)
+            if path and len(path) >= 2:
+                return self.follow_path(path, my_position)
+
+        direct_intercept = self.find_direct_intercept(my_position, ghost_pos, self.ghost_velocity, pac_cost, map_state)
+        intercept_pos, intercept_score = self.find_best_intercept(my_position, ghost_pos, pac_cost, ghost_cost, map_state)
+        goal = None
+
+        if direct_intercept is not None:
+            d_pac = pac_cost.get(direct_intercept, float('inf'))
+            d_ghost = ghost_cost.get(direct_intercept, float('inf'))
+            if d_pac / effective_speed < d_ghost:
+                goal = direct_intercept
+
+        if goal is None:
+            if (self.current_intercept is not None and \
+                self.intercept_confirmed_step >= step_number - 5):
+                cp = self.current_intercept
+                cp_pac = pac_cost.get(cp, float('inf'))
+                cp_ghost = ghost_cost.get(cp, float('inf'))
+                if cp_pac / effective_speed <= cp_ghost and cp_pac > 0:
+                    goal = cp
+
+            if goal is None and intercept_pos is not None:
+                self.current_intercept = intercept_pos
+                self.intercept_confirmed_step = step_number
+                goal = intercept_pos
+
+        if goal is None:
+            goal = ghost_pos
+
+        path = self.path_to(my_position, goal, map_state)
+        if not path or len(path) < 2:
+            path = self.path_to(my_position, ghost_pos, map_state)
+            if not path or len(path) < 2:
+                return self.explore(my_position, map_state)
+
+        return self.follow_path(path, my_position)
+
+    def _is_valid_position(self, pos, map_state):
         row, col = pos
-        height, width = map_state.shape
-        
-        # Check bounds
-        if row < 0 or row >= height or col < 0 or col >= width:
+        h, w = map_state.shape
+        if row < 0 or row >= h or col < 0 or col >= w:
             return False
-        
-        # Check not a wall
         return map_state[row, col] == 0
 
-    def _apply_move(self, pos, move):
-        """Apply a move to a position, return new position."""
-        delta_row, delta_col = move.value
-        return (pos[0] + delta_row, pos[1] + delta_col)
+    def _max_valid_steps(self, pos, move, map_state, desired_steps):
+        steps = 0
+        max_steps = min(self.pacman_speed, max(1, desired_steps))
+        cur = pos
+        for _ in range(max_steps):
+            dr, dc = move.value
+            npos = (cur[0] + dr, cur[1] + dc)
+            if not self._is_valid_position(npos, map_state):
+                break
+            steps += 1
+            cur = npos
+        return steps
 
-    def _get_neighbors(self, pos, map_state):
-        """Get all valid neighboring positions and their moves."""
-        neighbors = []
+
+
+class GhostAgent(BaseGhostAgent):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.name = "Hybrid Phantom v2"
+        self._history = []
+        self._history_ban = 4  
+        self.last_known_enemy_pos = None 
         
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
-            next_pos = self._apply_move(pos, move)
-            if self._is_valid_position(next_pos, map_state):
-                neighbors.append((next_pos, move))
+        # Tá»‘c Ä‘á»™ giáº£ Ä‘á»‹nh cá»§a Pacman
+        self.pacman_speed = max(2, int(kwargs.get("pacman_speed", 2))) 
         
-        return neighbors
+        # Cáº¥u trÃºc báº£n Ä‘á»“
+        self.map_analyzed = False
+        self.valid_tiles = {}
+        self.dead_ends = set()
+        self.junctions = set()
+        self.map_BFS_cache = {}
+        self.dist_to_junction = {} # Má»šI: Báº£n Ä‘á»“ khoáº£ng cÃ¡ch thoÃ¡t hiá»ƒm
 
-    def _manhattan_distance(self, pos1, pos2):
-        """Calculate Manhattan distance between two positions."""
-        return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-    
-    def bfs(self, start, target, map_state):
-        """
-        Find shortest path from start to goal using BFS.
+    def _analyze_map(self, map_state):
+        if self.map_analyzed:
+            return
         
-        Returns:
-            List of Move enums representing the path, or [Move.STAY] if no path
-        """
-        from collections import deque
-
-        # Queue stores (position, path_to_reach_it)
-        queue = deque([(start, [])])
-        visited = set([start])
-
+        height, width = map_state.shape
+        # 1. QuÃ©t map cÆ¡ báº£n
+        for r in range(height):
+            for c in range(width):
+                if map_state[r, c] in [0, -1]:
+                    self.valid_tiles[(r, c)] = True
+                    if self._cell_exits((r, c), map_state) >= 3:
+                        self.junctions.add((r, c))
+                        
+        # 2. XÃ¢y dá»±ng Ä‘á»“ thá»‹ & NgÃµ cá»¥t
+        graph = {pos: [] for pos in self.valid_tiles}
+        for pos in self.valid_tiles:
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+                next_pos = (pos[0] + move.value[0], pos[1] + move.value[1])
+                if next_pos in self.valid_tiles:
+                    graph[pos].append(next_pos)
+                    
+        initial_dead_ends = [pos for pos, neighbors in graph.items() if len(neighbors) <= 1]
+        queue = deque(initial_dead_ends)
+        
         while queue:
-            curr, path = queue.popleft()
+            current = queue.popleft()
+            self.dead_ends.add(current)
+            for neighbor in graph[current]:
+                if neighbor not in self.dead_ends:
+                    exits = sum(1 for n in graph[neighbor] if n not in self.dead_ends)
+                    if exits <= 1:
+                        queue.append(neighbor)
+                        
+        # 3. Má»šI: Multi-source BFS tÃ­nh khoáº£ng cÃ¡ch tá»›i NgÃ£ TÆ° gáº§n nháº¥t
+        if self.junctions:
+            q_junc = deque(self.junctions)
+            for j in self.junctions:
+                self.dist_to_junction[j] = 0
+            while q_junc:
+                curr = q_junc.popleft()
+                for m, n_pos in self._get_valid_moves(curr):
+                    if n_pos not in self.dist_to_junction:
+                        self.dist_to_junction[n_pos] = self.dist_to_junction[curr] + 1
+                        q_junc.append(n_pos)
+        else:
+            for pos in self.valid_tiles:
+                self.dist_to_junction[pos] = 0
 
-            # Found the goal!
-            if curr == target:
-                return path
-            
-            # Expand neighbors
-            for next_pos, move in self._get_neighbors(curr, map_state):
-                if next_pos not in visited:
-                    visited.add(next_pos)
-                    queue.append((next_pos, path + [move]))
+        self.map_analyzed = True
+
+    def _is_valid_position(self, pos, map_state=None):
+        return pos in self.valid_tiles
+
+    def _get_valid_moves(self, pos, map_state=None):
+        moves = []
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            next_pos = (pos[0] + move.value[0], pos[1] + move.value[1])
+            if next_pos in self.valid_tiles:
+                moves.append((move, next_pos))
+        return moves
+
+    def _cell_exits(self, pos, map_state):
+        exits = 0
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            n_pos = (pos[0] + move.value[0], pos[1] + move.value[1])
+            if n_pos in self.valid_tiles:
+                exits += 1
+        return exits
+
+    def get_BFS_map(self, start: tuple):
+        if start in self.map_BFS_cache:
+            return self.map_BFS_cache[start]
         
-        # No path found
-        return [Move.STAY]
+        dist = {start: 0}
+        parent = {start: None}
+        q = deque([start])
+        
+        while q:
+            curr = q.popleft()
+            for move, next_pos in self._get_valid_moves(curr):
+                if next_pos not in dist:
+                    dist[next_pos] = dist[curr] + 1
+                    parent[next_pos] = (curr, move)
+                    q.append(next_pos)
+                    
+        self.map_BFS_cache[start] = (dist, parent)
+        if len(self.map_BFS_cache) > 40:
+            self.map_BFS_cache.pop(next(iter(self.map_BFS_cache)))
+        return dist, parent
+
+    def is_in_los(self, p1, p2, map_state):
+        r1, c1 = p1
+        r2, c2 = p2
+        if r1 == r2:
+            for c in range(min(c1, c2) + 1, max(c1, c2)):
+                if map_state[r1][c] == 1: return False
+            return True
+        if c1 == c2:
+            for r in range(min(r1, r2) + 1, max(r1, r2)):
+                if map_state[r][c1] == 1: return False
+            return True
+        return False
+
+    def get_voronoi_area(self, g_pos, p_dist_map):
+        g_dist, _ = self.get_BFS_map(g_pos)
+        safe_area = 0
+        for pos, g_d in g_dist.items():
+            p_d = p_dist_map.get(pos, 0)
+            if g_d < (p_d / 1.5):
+                safe_area += 1
+        return safe_area
+
+    def pacman_tick(self, path: list) -> int:
+        if not path: return 0
+        ticks = 0
+        current_move = path[0]
+        steps = 0
+        
+        for move in path:
+            if move == current_move and steps < self.pacman_speed:
+                steps += 1
+            else:
+                ticks += 1
+                current_move = move
+                steps = 1
+        if steps > 0:
+            ticks += 1
+        return ticks
+
+    def minimax(self, ghost_pos: tuple, pacman_pos: tuple, map_state: np.ndarray, depth: int, alpha: float, beta: float, ghost_turn: bool):
+        if ghost_pos == pacman_pos:
+            return -10000 - depth 
+
+        if depth == 0:
+            p_dist, p_parent = self.get_BFS_map(pacman_pos)
+            
+            if ghost_pos not in p_dist:
+                return float('inf') 
+            
+            dist_to_pacman = p_dist[ghost_pos]
+            if dist_to_pacman == 0:
+                return -10000
+
+            path = []
+            curr = ghost_pos
+            while curr != pacman_pos:
+                prev, move_taken = p_parent[curr]
+                path.append(move_taken)
+                curr = prev
+            path.reverse()
+            
+            ticks = self.pacman_tick(path)
+            score = (ticks * 100) + len(path)
+            
+            if ghost_pos in self.dead_ends:
+                score -= 5000 
+                
+            score += self.get_voronoi_area(ghost_pos, p_dist) * 10 
+            
+            if ghost_pos in self.junctions:
+                score += 50 
+                
+            if self.is_in_los(ghost_pos, pacman_pos, map_state):
+                score -= 200 
+            
+            # --- VÃ Lá»–I HORIZON EFFECT: Há»† THá»NG Cáº¢NH BÃO ÄÆ¯á»œNG Háº¦M ---
+            d_junc = self.dist_to_junction.get(ghost_pos, 0)
+            if d_junc > 0:
+                # Náº¿u thá»i gian Pacman Ä‘uá»•i tá»›i nhá» hÆ¡n thá»i gian Ghost láº¿t Ä‘Æ°á»£c ra khá»i háº»m -> Tá»± sÃ¡t!
+                if (dist_to_pacman / 1.5) <= d_junc:
+                    score -= 3000 
+                    
+            return score
+            
+        if ghost_turn:
+            max_eval = -float('inf')
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
+                next_g = (ghost_pos[0] + move.value[0], ghost_pos[1] + move.value[1]) if move != Move.STAY else ghost_pos
+                
+                if self._is_valid_position(next_g) or move == Move.STAY:
+                    eval_score = self.minimax(next_g, pacman_pos, map_state, depth - 1, alpha, beta, False)
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break 
+            return max_eval
+            
+        else:
+            min_eval = float('inf')
+            valid_moves_exist = False
+            
+            # --- VÃ Lá»–I XUYÃŠN THáº¤U: QUÃ‰T VA CHáº M TRÃŠN Tá»ªNG BÆ¯á»šC CHáº Y ---
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+                curr = pacman_pos
+                caught = False
+                steps_taken = 0
+                
+                for _ in range(self.pacman_speed):
+                    n_pos = (curr[0] + move.value[0], curr[1] + move.value[1])
+                    if not self._is_valid_position(n_pos):
+                        break
+                    curr = n_pos
+                    steps_taken += 1
+                    
+                    # Pacman cháº¡m trÃºng Ghost trong lÃºc Ä‘ang phi nÆ°á»›c Ä‘áº¡i
+                    if curr == ghost_pos:
+                        caught = True
+                        break
+                        
+                if caught:
+                    eval_score = -10000 - depth
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+                elif steps_taken > 0:
+                    valid_moves_exist = True
+                    eval_score = self.minimax(ghost_pos, curr, map_state, depth - 1, alpha, beta, True)
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+                        
+            if not valid_moves_exist and min_eval == float('inf'):
+                return 0 
+            return min_eval
+
+    def step(self, map_state: np.ndarray, my_position: tuple, enemy_position: tuple, step_number: int) -> Move:
+        me = tuple(int(v) for v in my_position)
+        
+        if not self.map_analyzed:
+            self._analyze_map(map_state)
+
+        if enemy_position is not None:
+            self.last_known_enemy_pos = tuple(int(v) for v in enemy_position)
+            
+        target_threat = enemy_position or self.last_known_enemy_pos
+
+        if target_threat is None:
+            moves = self._get_valid_moves(me)
+            if moves:
+                return random.choice(moves)[0]
+            return Move.STAY
+
+        p_pos = tuple(int(v) for v in target_threat)
+
+        best_move = Move.STAY
+        max_eval = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        depth_limit = 3 
+
+        for move, next_pos in self._get_valid_moves(me):
+            eval_score = self.minimax(next_pos, p_pos, map_state, depth_limit, alpha, beta, False)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+                
+            alpha = max(alpha, eval_score)
+
+        return best_move
