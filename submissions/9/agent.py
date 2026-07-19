@@ -78,7 +78,8 @@ class PacmanAgent(BasePacmanAgent):
                 capture_path = path
             # calculate ticks   
             ticks = self.pacman_tick(capture_path)
-            return (ticks * 10) + len(capture_path) # use path length as tiebreaker
+            manhattan_distance = get_mahattan_distance(ghost_position, pacman_position)
+            return (ticks * 10) + len(capture_path) + manhattan_distance * 0.1 # use path length and manhattan distance as tie breakers
         
         # minimizing for pacman
         if pacman_turn:
@@ -95,7 +96,7 @@ class PacmanAgent(BasePacmanAgent):
         # maximizing for ghost
         else:
             max_eval = -float('inf')
-            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
                 next_ghost_pos = (ghost_position[0] + move.value[0], ghost_position[1] + move.value[1])
                 
                 if self.is_valid_position_precomputed(next_ghost_pos):
@@ -143,7 +144,7 @@ class PacmanAgent(BasePacmanAgent):
         Returns a list of tuples: (Move, step_count, landing_position)
         """
         options = []
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
             delta_row, delta_col = move.value
             current_pos = pos        
             for steps in range(1, self.pacman_speed + 1):
