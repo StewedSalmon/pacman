@@ -1,6 +1,3 @@
-# Nguyễn Hoàng Tiến - 24127308
-# Nguyễn Trần Phương Thuý - 24127248
-# Trần Hoàng Khánh My - 24127086
 
 import sys
 from pathlib import Path
@@ -16,11 +13,14 @@ import numpy as np
 import random
 from collections import deque
 
+def get_mahattan_distance(pos1: tuple, pos2: tuple) -> int:
+    """Calculates the Manhattan distance between two positions."""
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
 class PacmanAgent(BasePacmanAgent):
     """
     Minimax Pacman with BFS evaluation
     """
-    
     def __init__(self, **kwargs):
         """
         Initialize the Pacman agent.
@@ -71,9 +71,13 @@ class PacmanAgent(BasePacmanAgent):
                 path.append(move_taken)
                 current = previous
             path.reverse() 
-            # calculate ticks
-            ticks = self.pacman_tick(path)
-            return (ticks * 10) + len(path) # use path length as tiebreaker
+            if len(path) > 0:
+                capture_path = path[:-1] # remove the last tile since it is the capture tile
+            else:
+                capture_path = path
+            # calculate ticks   
+            ticks = self.pacman_tick(capture_path)
+            return (ticks * 10) + len(capture_path) # use path length as tiebreaker
         
         # minimizing for pacman
         if pacman_turn:
@@ -218,13 +222,13 @@ class GhostAgent(BaseGhostAgent):
         self.name = "Minimax Ghost"
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
-        self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
+        self.pacman_speed = 2
         self.valid_tiles = {}
         self.map_BFS_cache = {}
         self.dead_ends = set()
         
     def get_BFS_map(self, start: tuple):
-        """Retrieves or calculates BFS map from start positiom"""
+        """Retrieves or calculates BFS map from start position"""
         if start in self.map_BFS_cache:
             return self.map_BFS_cache[start]
         
@@ -233,7 +237,7 @@ class GhostAgent(BaseGhostAgent):
         queue = deque([start])
         while queue:
             current = queue.popleft()
-            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
                 x, y = move.value
                 next = (current[0] + x, current[1] + y)
                 if self.is_valid_position_precomputed(next) and next not in distances:
@@ -245,7 +249,7 @@ class GhostAgent(BaseGhostAgent):
     
     def minimax(self, ghost_position: tuple, pacman_position: tuple, map_state: np.ndarray, depth: int, alpha: int, beta: int, ghost_turn: bool):
         # base case
-        if ghost_position == pacman_position:
+        if get_mahattan_distance(ghost_position, pacman_position) < 2:
             return -1000 - depth
         
         if depth == 0:
@@ -262,9 +266,14 @@ class GhostAgent(BaseGhostAgent):
                 current = previous
             path.reverse()
             
+            if len(path) > 0:
+                capture_path = path[:-1] # remove the last tile since it is the capture tile
+            else:
+                capture_path = path
+            
             # calculate score
-            ticks = self.pacman_tick(path)
-            score = (ticks * 10) + len(path) # use path length as tiebreaker
+            ticks = self.pacman_tick(capture_path)
+            score = (ticks * 10) + len(capture_path) # use path length as tiebreaker
             if ghost_position in self.dead_ends:
                 score -= 0.5
             return score
@@ -304,7 +313,7 @@ class GhostAgent(BaseGhostAgent):
         height, width = map_state.shape
         for row in range(height):
             for col in range(width):
-                if map_state[row, col] == 0:
+                if map_state[row, col] != 1: # not a wall
                     self.valid_tiles[(row, col)] = True
                     
         # build adjacency graph with valid tiles
@@ -366,8 +375,8 @@ class GhostAgent(BaseGhostAgent):
                     break
                 current_position = next_position
                 
-            if current_position != pacman_position:
-                simulated_positions.append(current_position)
+                if current_position != pacman_position:
+                    simulated_positions.append(current_position)
         return simulated_positions
             
     def step(self, map_state: np.ndarray, 
