@@ -29,6 +29,7 @@ class PacmanAgent(BasePacmanAgent):
         super().__init__(**kwargs)
         self.name = "Minimax Pacman"
         self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
+        self.max_depth = 3
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
         self.valid_tiles = {}
@@ -82,7 +83,7 @@ class PacmanAgent(BasePacmanAgent):
         # minimizing for pacman
         if pacman_turn:
             min_eval = float('inf')
-            pacman_next_positions = self.get_sprint_options(pacman_position)
+            pacman_next_positions = self.get_sprint_options(pacman_position)         
             for _, _, next_pacman_pos in pacman_next_positions:
                 eval = self.minimax(ghost_position, next_pacman_pos, map_state, depth - 1, alpha, beta, False)
                 min_eval = min(min_eval, eval)
@@ -181,7 +182,7 @@ class PacmanAgent(BasePacmanAgent):
         
         possible_moves = self.get_sprint_options(my_position)
         for move, steps, landing_pos in possible_moves:
-            eval = self.minimax(enemy_position, landing_pos, map_state, 3, alpha, beta, False)
+            eval = self.minimax(enemy_position, landing_pos, map_state, self.max_depth, alpha, beta, False)
             if eval < min_eval:
                 min_eval = eval
                 best_move = move
@@ -223,6 +224,7 @@ class GhostAgent(BaseGhostAgent):
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
         self.pacman_speed = 2
+        self.max_depth = 3
         self.valid_tiles = {}
         self.map_BFS_cache = {}
         self.dead_ends = set()
@@ -406,7 +408,7 @@ class GhostAgent(BaseGhostAgent):
             next_pos = (my_position[0] + move.value[0], my_position[1] + move.value[1])
             
             if self.is_valid_position_precomputed(next_pos):
-                eval = self.minimax(next_pos, threat, map_state, 3, alpha, beta, False)
+                eval = self.minimax(next_pos, threat, map_state, self.max_depth, alpha, beta, False)
                 
                 if eval > max_eval:
                     max_eval = eval
