@@ -165,13 +165,6 @@ class PacmanAgent(BasePacmanAgent):
         if enemy_position is not None:
             self.last_known_enemy_pos = enemy_position
         
-        # Use current sighting, fallback to last known, or explore
-        target = enemy_position or self.last_known_enemy_pos
-        
-        if target is None:
-            # No information about enemy - explore randomly
-            return self._explore(my_position)
-        
         if len(self.valid_tiles) == 0:
             self.precompute_valid_tiles(map_state)
         
@@ -193,26 +186,6 @@ class PacmanAgent(BasePacmanAgent):
         if best_steps > 1:
             return (best_move, best_steps)
         return (best_move, 1)
-
-    def _explore(self, my_position: tuple):
-        """Random exploration when enemy position is unknown."""
-        all_moves = self.get_sprint_options(my_position)
-        if all_moves:
-            move, steps, _ = random.choice(all_moves)
-            if steps > 1:
-                return (move, steps)
-            return (move, 1)
-        return (Move.STAY, 1)
-    
-    def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
-        """Check if a position is valid (not a wall and within bounds)."""
-        row, col = pos
-        height, width = map_state.shape
-        
-        if row < 0 or row >= height or col < 0 or col >= width:
-            return False
-        
-        return map_state[row, col] == 0
 
 class GhostAgent(BaseGhostAgent):
     
@@ -390,12 +363,8 @@ class GhostAgent(BaseGhostAgent):
         if enemy_position is not None:
             self.last_known_enemy_pos = enemy_position
         
-        # Use current sighting, fallback to last known, or move randomly
+        # Use current sighting or fallback to last known
         threat = enemy_position or self.last_known_enemy_pos
-        
-        if threat is None:
-            # No information about enemy - move randomly
-            return self._random_move(my_position, map_state)
         
         if len(self.valid_tiles) == 0:
             self.precompute_valid_tiles(map_state)
@@ -419,15 +388,3 @@ class GhostAgent(BaseGhostAgent):
         
         return best_move
     
-    def _random_move(self, my_position: tuple, map_state: np.ndarray) -> Move:
-        """Random movement when enemy position is unknown."""
-        all_moves = [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
-        random.shuffle(all_moves)
-        
-        for move in all_moves:
-            delta_row, delta_col = move.value
-            new_pos = (my_position[0] + delta_row, my_position[1] + delta_col)
-            if self._is_valid_position(new_pos, map_state):
-                return move
-        
-        return Move.STAY
