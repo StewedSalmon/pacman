@@ -197,7 +197,7 @@ class GhostAgent(BaseGhostAgent):
         self.name = "Minimax Ghost"
         # Memory for limited observation mode
         self.last_known_enemy_pos = None
-        self.pacman_speed = 2
+        self.pacman_speed = kwargs.get("pacman_speed", 1)
         self.max_depth = 3
         self.valid_tiles = {}
         self.map_BFS_cache = {}
@@ -367,7 +367,7 @@ class GhostAgent(BaseGhostAgent):
         threat = enemy_position or self.last_known_enemy_pos
         
         if threat is None:
-            # No information about enemy - stay
+            # No information about enemy
             return Move.STAY
         
         if len(self.valid_tiles) == 0:
