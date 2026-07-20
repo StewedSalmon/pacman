@@ -113,7 +113,7 @@ class PacmanAgent(BasePacmanAgent):
         height, width = map_state.shape
         for row in range(height):
             for col in range(width):
-                if map_state[row, col] == 0:
+                if map_state[row, col] != 1: # not a wall:
                     self.valid_tiles[(row, col)] = True
     
     def is_valid_position_precomputed(self, pos: tuple):
@@ -257,7 +257,7 @@ class GhostAgent(BaseGhostAgent):
         # maximizing for ghost
         if ghost_turn:
             max_eval = -float('inf')
-            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
+            for move in [Move.STAY, Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
                 next_ghost_pos = (ghost_position[0] + move.value[0], ghost_position[1] + move.value[1])
                 
                 if self.is_valid_position_precomputed(next_ghost_pos):
@@ -340,7 +340,7 @@ class GhostAgent(BaseGhostAgent):
         """Generate sensible next moves for Pacman based on current position and map state."""
         simulated_positions = []
         
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
             row, col = move.value
             current_position = pacman_position
             
@@ -366,15 +366,20 @@ class GhostAgent(BaseGhostAgent):
         # Use current sighting or fallback to last known
         threat = enemy_position or self.last_known_enemy_pos
         
+        if threat is None:
+            # No information about enemy - stay
+            return Move.STAY
+        
         if len(self.valid_tiles) == 0:
             self.precompute_valid_tiles(map_state)
+            
         
         best_move = Move.STAY
         max_eval = -float('inf')
         alpha = -float('inf')
         beta = float('inf')
         
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY]:
+        for move in [Move.STAY, Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
             next_pos = (my_position[0] + move.value[0], my_position[1] + move.value[1])
             
             if self.is_valid_position_precomputed(next_pos):
@@ -387,4 +392,3 @@ class GhostAgent(BaseGhostAgent):
                 alpha = max(alpha, eval)
         
         return best_move
-    
