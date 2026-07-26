@@ -35,11 +35,13 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
             ghost_id=ghost_id,
             submissions_dir="submissions", # Point to your submissions folder
             max_steps=200,
-            visualize=True,               # Disable visualizer for speed
+            visualize=False,              # Disable visualizer for speed during benchmarks
             delay=0.0,
             capture_distance_threshold=2,
             deterministic_starts=True,    
-            pacman_speed=2                 # Match your agent's speed
+            pacman_speed=2,                # Match your agent's speed
+            pacman_obs_radius=5,           # Enable 5-cell fog of war for Pacman
+            ghost_obs_radius=5             # Enable 5-cell fog of war for Ghost
         )
         
         # Load fresh agent instances
@@ -71,13 +73,13 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
     avg_steps = statistics.mean(steps_list) if steps_list else 0
     std_dev = statistics.stdev(steps_list) if len(steps_list) > 1 else 0
 
-    # print("\n" + "="*40)
-    # print("🏆 NATIVE BENCHMARK RESULTS 🏆")
-    # print("="*40)
-    # print(f"Pacman Win Rate: {win_rate:.1f}% ({wins} W / {losses} L / {draws} D)")
-    # print(f"Average Steps to Catch: {avg_steps:.1f}")
-    # print(f"Step Variance (Std Dev): ±{std_dev:.1f}")
-    # print("="*40)
+    print("\n" + "="*40)
+    print("🏆 NATIVE BENCHMARK RESULTS 🏆")
+    print("="*40)
+    print(f"Pacman Win Rate: {win_rate:.1f}% ({wins} W / {losses} L / {draws} D)")
+    print(f"Average Steps to Catch: {avg_steps:.1f}")
+    print(f"Step Variance (Std Dev): ±{std_dev:.1f}")
+    print("="*40)
     
     # Export to CSV if requested
     if save_csv:
