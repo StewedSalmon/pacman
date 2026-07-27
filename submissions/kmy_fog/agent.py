@@ -25,7 +25,7 @@ class PacmanAgent(BasePacmanAgent):
         self.my_history = deque(maxlen=8)
         self.last_move = None
         
-        # Hệ thống Waypoint an toàn (Đã tối ưu hóa tọa độ ô trống dựa trên mẫu của Team A)
+        # Hệ thống Waypoint an toàn
         self.waypoints = [
             (9, 10),  # Trung tâm bản đồ (Hub)
             (5, 12),  # Khu vực sào huyệt phải
@@ -217,7 +217,7 @@ class GhostAgent(BaseGhostAgent):
         # 3. THỰC THI CHIẾN THUẬT
         if self.mode == "SPRINT":
             if not self.sprint_target:
-                # Không dùng (16, 10) nữa, lấy điểm xa trung tâm nhất làm mục tiêu nước rút (các góc)
+                # lấy điểm xa trung tâm nhất làm mục tiêu nước rút (các góc)
                 self.sprint_target = self._find_farthest_point(center_pos, map_state)
                 
             if my_position != self.sprint_target:
@@ -277,7 +277,7 @@ class GhostAgent(BaseGhostAgent):
                     
             return best_move
 
-    # ================= HÀM BỔ TRỢ (Giữ nguyên) =================
+    # ================= HÀM BỔ TRỢ =================
 
     def _find_farthest_point(self, start_pos, map_state):
         distances = self._bfs_distances(start_pos, map_state)
