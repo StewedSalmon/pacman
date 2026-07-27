@@ -289,7 +289,7 @@ class GhostAgent(BaseGhostAgent):
             for c in range(width):
                 if map_state[r, c] == 1: continue
                 d = distances.get((r, c), 0)
-                if d > max_dist:
+                if d >= max_dist:
                     max_dist = d
                     best_spot = (r, c)
         return best_spot
@@ -319,7 +319,7 @@ class GhostAgent(BaseGhostAgent):
         queue = deque([(start, [])])
         visited = {start}
         
-        directions = [Move.LEFT, Move.RIGHT, Move.UP, Move.DOWN] if prefer_horizontal else [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
+        directions = [Move.RIGHT, Move.LEFT, Move.UP, Move.DOWN] if prefer_horizontal else [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
         
         while queue:
             curr, path = queue.popleft()
