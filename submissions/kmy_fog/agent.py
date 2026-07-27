@@ -25,23 +25,68 @@ class PacmanAgent(BasePacmanAgent):
         self.my_history = deque(maxlen=8)
         self.last_move = None
         
-        # Hệ thống Waypoint an toàn
-        self.waypoints = [
-            (9, 10),  # Trung tâm bản đồ (Hub)
-            (5, 12),  # Khu vực sào huyệt phải
-            (13, 11), # Vùng trung tâm dưới
-            (9, 5),   # Khu vực sào huyệt trái
-            (2, 15),  # Góc trên-phải
-            (2, 5),   # Góc trên-trái
-            (20, 5),  # Góc dưới-trái
-            (20, 15)  # Góc dưới-phải
-        ]
+        self.waypoints = []
         self.current_wp_index = 0
-        self.steps_at_current_wp = 0  # Đếm số bước kẹt tại 1 waypoint
+        self.steps_at_current_wp = 0 # Đếm số bước kẹt tại 1 waypoint
+
+    def _generate_strategic_waypoints(self, map_state):
+        """
+        Hàm sinh tọa độ tuần tra động dựa trên tỷ lệ hình học của bản đồ.
+        Đảm bảo tính tổng quát hóa trên mọi kích thước không gian.
+        """
+        h, w = map_state.shape
+        cy, cx = h // 2, w // 2  # Trọng tâm bản đồ (Ví dụ map 21x21 -> cy=10, cx=10)
+        
+        # Tính toán các vùng phân phối dựa trên khoảng cách tương đối
+        raw_points = [
+            (cy - 1, cx),                             # (9, 10) - Hub
+            (cy // 2, cx + cx // 4 + 1),              # (5, 12) - Sào huyệt phải
+            (cy + cy // 3, cx + 1),                   # (13, 11) - Trung tâm dưới
+            (cy - 1, cx // 2),                        # (9, 5) - Sào huyệt trái
+            (2, w - cx // 2 - 1),                     # (2, 15) - Góc trên phải
+            (2, cx // 2),                             # (2, 5) - Góc trên trái
+            (h - 1, cx // 2),                         # (20, 5) - Góc dưới trái
+            (h - 1, w - cx // 2 - 1)                  # (20, 15) - Góc dưới phải
+        ]
+        
+        valid_waypoints = []
+        for r, c in raw_points:
+            # Ép kiểu và đảm bảo không vượt quá biên ma trận
+            r = max(0, min(h - 1, int(r)))
+            c = max(0, min(w - 1, int(c)))
+            
+            # Nếu toán học rơi trúng ô tường (1), tịnh tiến ra ô trống gần nhất
+            if map_state[r, c] == 1:
+                r, c = self._find_nearest_empty(r, c, map_state)
+                
+            valid_waypoints.append((r, c))
+            
+        return valid_waypoints
+
+    def _find_nearest_empty(self, r, c, map_state):
+        """Tìm ô trống gần nhất nếu điểm chiến lược rơi vào tường"""
+        h, w = map_state.shape
+        queue = deque([(r, c)])
+        visited = {(r, c)}
+        
+        while queue:
+            curr_r, curr_c = queue.popleft()
+            if map_state[curr_r, curr_c] != 1:
+                return curr_r, curr_c
+                
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = curr_r + dr, curr_c + dc
+                if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        return r, c
 
     def step(self, map_state: np.ndarray, my_position: tuple, enemy_position: tuple, step_number: int):
         height, width = map_state.shape
         target = None
+
+        if not self.waypoints:
+            self.waypoints = self._generate_strategic_waypoints(map_state)
         
         # 1. Thấy Ghost trực tiếp -> Hủy bỏ đi tuần, lập tức truy đuổi và đón đầu
         if enemy_position is not None:
