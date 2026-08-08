@@ -1,4 +1,8 @@
 """
+CLI:
+cd src
+python arena.py --seek 24127108_24127329_24127142 --hide 24127108_24127329_24127142
+
 Template for student agent implementation.
 
 INSTRUCTIONS:
@@ -21,774 +25,601 @@ IMPORTANT:
 """
 
 import sys
-import random
-import itertools
 from pathlib import Path
-from collections import deque
-from heapq import heappush, heappop
-import numpy as np
 
+# Add src to path to import the interface
 src_path = Path(__file__).parent.parent.parent / "src"
 sys.path.insert(0, str(src_path))
 
 from agent_interface import PacmanAgent as BasePacmanAgent
 from agent_interface import GhostAgent as BaseGhostAgent
 from environment import Move
+import numpy as np
+
+import itertools
+import heapq
+import math
+
+IS_DEBUG_LOG = False
+
+
+class Node:
+    def __init__(self, parent, action: Move, state: tuple[int, int], g_cost: int):
+        self.parent = parent
+        self.action = action
+        self.state = state
+        self.g_cost = g_cost
+
+class PriorityQueue:
+    def __init__(self):
+        self.pq: list[tuple[int, int, Node]] = []
+        self.counter = itertools.count()
+
+    def push(self, node: Node, priority: int):
+        heapq.heappush(self.pq, (priority, next(self.counter), node))
+
+    def pop(self):
+        if not self.pq:
+            raise KeyError("Pop from an empty priority queue")
+        priority, count, item = heapq.heappop(self.pq)
+        return item
+
+    def isEmpty(self):
+        return len(self.pq) == 0
 
 
 class PacmanAgent(BasePacmanAgent):
     """
     Pacman (Seeker) Agent - Goal: Catch the Ghost
-    Solution: Kết hợp Memory mapping với Q-learning prediction.
+
+    Implement your search algorithm to find and catch the ghost.
+    Suggested algorithms: BFS, DFS, A*, Greedy Best-First
     """
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.pacman_speed = max(1, int(kwargs.get("pacman_speed", 1)))
-        self.name = "Learning Seeker (Limited Vision)"
-        self.current_path = []
-        
-        # --- BỘ NHỚ LIMITED VISION ---
-        self.memory_map = None
+        self.map_state: np.ndarray = np.ndarray(2)
+
+        self.name = "EightEye Pacman"
+
+        self.available_path: list[Node] = []
         self.last_known_enemy_pos = None
 
-        # --- THEO DÕI VỊ TRÍ GHOST ĐỂ TÍNH ĐÀ ---
-        self.last_enemy_pos = None
-        self.prev_enemy_pos = None
-        self.last_momentum = None
-        
-        # --- HỌC TĂNG CƯỜNG (Q-Learning) CHO NGƯỠNG KHOẢNG CÁCH ---
-        # Tự động học giá trị ngưỡng tối ưu khi Pacman lại gần Ghost
-        self.threshold_options = [2, 3, 4, 5, 6, 7]
-        self.q_values = {t: 0.0 for t in self.threshold_options} # Điểm số cho mỗi ngưỡng
-        self.current_threshold = 4 # Bắt đầu với ngưỡng là 4
-        self.steps_with_threshold = 0
-        self.start_distance = None
-        self.exploration_rate = 0.3 # 30% tỷ lệ chọn ngẫu nhiên (explore)
+        self.cur_pd_count = 0
+        self.patrol_destination = [
+            # (1, 5),     # Top left
+            # (1, 15),    # Top Right
+            # (7, 10),    # Middle cage I
+            # (11 ,10),   # Middle cage II
+            # (15, 10),   # Middle cage III
+            # (19, 10)    # Middle bottom
+            # (10, 15),
+            # (10, 5),
+            # (4, 5),
+            # (1, 1),
+            # (7, 10),
+            # (4, 15),
+            # (1, 19)
+            (10, 5),
+            (10, 15),
+            (1, 19),
+            (4, 15),
+            (7, 10),
+            (1, 1),
+            (4, 5),
+            (19, 1),
+            (19, 19),
+            (16, 10)
+        ]
 
-    def _manhattan_distance(self, pos1, pos2):
-        """Tính toán khoảng cách Manhattan giữa 2 điểm."""
+    @classmethod
+    def manhattan_dis(cls, pos1, pos2):
         return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
-    # SỬ DỤNG MEMORY MAP thay cho map_state
-    def _get_maze_distances(self, start):
-        """Dùng BFS để tìm khoảng cách thực tế trong memory map."""
-        if self.memory_map is None: return {}
-        queue = deque([(start, 0)])
-        visited = {start: 0}
-        while queue:
-            current, dist = queue.popleft()
-            for next_pos, _ in self._get_neighbors(current, self.memory_map):
-                if next_pos not in visited:
-                    visited[next_pos] = dist + 1
-                    queue.append((next_pos, dist + 1))
-        return visited
-
-    def predict_enemy_move(self, enemy_pos, my_pos, distances_from_me):
-        """Dự đoán vị trí tiếp theo qua memory map dựa trên hướng đi hiện tại và khoảng cách tới Pacman."""
-        neighbors = self._get_neighbors(enemy_pos, self.memory_map)
-        if not neighbors:
-            return enemy_pos
-        
-        # Tính hướng đi gần đây của Ghost
-        momentum_dir = None
-        if self.prev_enemy_pos is not None and self.prev_enemy_pos != enemy_pos:
-            momentum_dir = (enemy_pos[0] - self.prev_enemy_pos[0], 
-                           enemy_pos[1] - self.prev_enemy_pos[1])
-        
-        best_move = Move.STAY
-        best_score = -1
-        
-        for next_pos, move in neighbors:
-            # Ưu tiên các hướng của Ghost nếu chúng là chưa biết (-1) hoặc đã biết (0)
-            # khoảng cách BFS từ Ghost đến Pacman
-            dist = distances_from_me.get(next_pos, self._manhattan_distance(next_pos, my_pos))
-            score = dist
-            
-            # Thêm điểm nếu Ghost tiếp tục đi theo hướng cũ (không quay đầu)
-            if momentum_dir is not None:
-                move_dir = move.value
-                if move_dir == momentum_dir:
-                    score += 2 # Thưởng lớn nếu Ghost duy trì hướng đi
-            
-            if score > best_score:
-                best_score = score
-                best_move = move
-                
-        # Giả lập vị trí di chuyển mong muốn
-        return (enemy_pos[0] + best_move.value[0], enemy_pos[1] + best_move.value[1])
-        
-    def astar(self, start, goal):
-        """A* trên memory map. Mục tiêu có thể là ô chưa biết (-1)."""
-        if start == goal: return [Move.STAY]
-
-        def heuristic(pos):
-            return self._manhattan_distance(pos, goal)
-        
-        counter = itertools.count()
-        frontier = [(heuristic(start), next(counter), start)]
-        came_from = {start: (None, None)}
-        g_cost = {start: 0}
-        
-        while frontier:
-            _, _, current = heappop(frontier)
-            
-            if current == goal:
-                path = []
-                while current != start:
-                    parent, move = came_from[current]
-                    path.append(move)
-                    current = parent
-                path.reverse()
-                return path if path else [Move.STAY]
-            
-            for next_pos, move in self._get_neighbors(current, self.memory_map):
-                # Không đi xuyên sương mù nếu đích không phải sương mù đó
-                if current != start and self.memory_map[next_pos] == -1 and next_pos != goal:
-                    continue
-                    
-                new_cost = g_cost[current] + 1
-                if next_pos not in g_cost or new_cost < g_cost[next_pos]:
-                    g_cost[next_pos] = new_cost
-                    f_cost = new_cost + heuristic(next_pos)
-                    came_from[next_pos] = (current, move)
-                    heappush(frontier, (f_cost, next(counter), next_pos))
-        
-        return []
-
-    def explore_bfs(self, start):
-        """Khám phá ô sương mù (-1) thông minh bằng cách chấm điểm thể tích sương mù."""
-        from collections import deque
-        queue = deque([(start, [])])
-        visited = set([start])
-        
-        height, width = self.memory_map.shape
-        frontiers = []
-        
-        # Tìm các ô sương mù gần nhất
-        while queue:
-            current, path = queue.popleft()
-            # Nếu gặp ô sương mù thì thêm vào danh sách
-            if self.memory_map[current] == -1:
-                frontiers.append((current, path))
-                continue
-            
-            for next_pos, move in self._get_neighbors(current, self.memory_map):
-                if next_pos not in visited:
-                    visited.add(next_pos)
-                    queue.append((next_pos, path + [move]))
-                    
-        if not frontiers:
+    def a_star(self, my_position, enemy_position) -> list[Node] | None:
+        """
+        Return a list of nodes that represent the shortest path from my_position to enemy_position
+        """
+        if enemy_position is None:
             return []
-            
-        best_path = []
-        best_score = float('-inf')
-        
-        for pos, path in frontiers:
-            r, c = pos
-            r_min = max(0, r - 2)
-            r_max = min(height, r + 3)
-            c_min = max(0, c - 2)
-            c_max = min(width, c + 3)
-            
-            window = self.memory_map[r_min:r_max, c_min:c_max]
-            fog_volume = np.sum(window == -1)
-            
-            # Khối lượng sương mù x 2.0 điểm trừ đi Khoảng cách bước
-            score = (fog_volume * 2.0) - len(path)
-            
-            # Ưu tiên dọn dẹp các ngách/góc khuất (sương mù) nếu nó ở quá gần (<= 3 bước)
-            # Tránh việc bỏ sót các góc trên bản đồ nơi Ghost có thể đang nấp!
-            if len(path) <= 3:
-                score += 100
-            
-            if score > best_score:
-                best_score = score
-                best_path = path
-                
-        return best_path
 
-    def _get_neighbors(self, pos, map_source):
-        """Lấy danh sách điểm có thể đi (tránh tường số 1)."""
-        height, width = map_source.shape
-        neighbors = []
-        moves = [Move.UP, Move.DOWN, Move.RIGHT, Move.LEFT]
-        # Random thứ tự di chuyển để tránh bị kẹt ở một hướng
-        random.shuffle(moves)
-        for move in moves:
-            nr, nc = pos[0] + move.value[0], pos[1] + move.value[1]
-            if 0 <= nr < height and 0 <= nc < width:
-                if map_source[nr, nc] != 1: 
-                    neighbors.append(((nr, nc), move))
-        return neighbors
+        frontier = PriorityQueue()
+        step = 0
+        manhattan_dis = self.manhattan_dis(my_position, enemy_position)
+        total_cost = step + manhattan_dis
 
-    def step(self, map_state: np.ndarray, 
-             my_position: tuple, 
+        initial_node = Node(
+            parent=None,
+            action=None,
+            state=my_position,
+            g_cost=0
+        )
+
+        frontier.push(node=initial_node, priority=total_cost)
+
+        # List of state
+        explored = set()
+
+        while True:
+            if frontier.isEmpty():
+                return []
+
+            node = frontier.pop()
+
+            if node.state == enemy_position:
+                path = []
+
+                while node.parent is not None:
+                    path.append(node)
+                    node = node.parent
+
+                path.reverse()
+
+                return path
+
+            if node.state in explored:
+                continue
+
+            explored.add(node.state)
+
+            direction = [
+                (1, 0, Move.DOWN),
+                (-1, 0, Move.UP),
+                (0, 1, Move.RIGHT),
+                (0, -1, Move.LEFT)
+            ]
+
+            for dx, dy, action in direction:
+                next_tile = (node.state[0] + dx, node.state[1] + dy)
+
+                if self._is_valid_position(next_tile, self.map_state) and next_tile not in explored:
+                    new_g_cost = node.g_cost + 1
+
+                    new_node = Node(
+                        parent=node,
+                        action=action,
+                        state=next_tile,
+                        g_cost=new_g_cost
+                    )
+                    total_cost = new_g_cost + self.manhattan_dis(next_tile, enemy_position)
+                    frontier.push(node=new_node, priority=total_cost)
+
+    def patrol(self, my_position):
+        if my_position == self.patrol_destination[self.cur_pd_count]:
+            # Update pd counter
+            self.cur_pd_count = (self.cur_pd_count + 1) % len(self.patrol_destination)
+
+        if IS_DEBUG_LOG:
+            print(f"Patrolling to {self.patrol_destination[self.cur_pd_count]}")
+        return self.a_star(my_position, self.patrol_destination[self.cur_pd_count])
+
+    def take_nearest_patrol_des(self, my_pos):
+        next_pd = 0
+        smallest_mahdis = 999
+        for i, pd in enumerate(self.patrol_destination):
+            if self.manhattan_dis(my_pos, pd) < smallest_mahdis:
+                next_pd = i
+                smallest_mahdis = self.manhattan_dis(my_pos, pd)
+        return next_pd
+
+    def step(self, map_state: np.ndarray,
+             my_position: tuple,
              enemy_position: tuple,
              step_number: int):
-        
-        # --- BƯỚC 1: CẬP NHẬT TRÍ NHỚ TỪ TẦM NHÌN HẠN CHẾ ---
-        if self.memory_map is None:
-            self.memory_map = np.full(map_state.shape, -1)
-        
-        visible_mask = map_state != -1
-        self.memory_map[visible_mask] = map_state[visible_mask]
-        
+        """
+        Decide the next move.
+
+        Args:
+            map_state: 2D numpy array where 1=wall, 0=empty, -1=unseen (fog)
+            my_position: Your current (row, col) in absolute coordinates
+            enemy_position: Ghost's (row, col) if visible, None otherwise
+            step_number: Current step number (starts at 1)
+
+        Returns:
+            Move or (Move, steps): Direction to move (optionally with step count)
+        """
+        self.map_state = map_state
+        list_of_action = []
+
+        if self.last_known_enemy_pos == my_position:
+            self.last_known_enemy_pos = None
+            self.cur_pd_count = self.take_nearest_patrol_des(my_position)
+
+        # Enemy spotted
         if enemy_position is not None:
             self.last_known_enemy_pos = enemy_position
-            # Có tầm nhìn, update momentum chính xác
-            self.prev_enemy_pos = getattr(self, 'last_enemy_pos', None)
-            self.last_enemy_pos = enemy_position
-        elif self.last_known_enemy_pos == my_position:
-            # Mất dấu Enemy, và ta đã tới chỗ đó nhưng không thấy
-            self.last_known_enemy_pos = None
-            self.prev_enemy_pos = None
-            self.last_enemy_pos = None
-            
-        target = enemy_position or self.last_known_enemy_pos
-        
-        current_momentum = None
-        if self.prev_enemy_pos is not None and getattr(self, 'last_enemy_pos', None) is not None and self.prev_enemy_pos != self.last_enemy_pos:
-            current_momentum = (self.last_enemy_pos[0] - self.prev_enemy_pos[0],
-                                self.last_enemy_pos[1] - self.prev_enemy_pos[1])
-                                
-        momentum_changed = False
-        if getattr(self, 'last_momentum', None) is not None and current_momentum is not None:
-            if current_momentum != self.last_momentum and current_momentum != (0, 0):
-                momentum_changed = True
-        self.last_momentum = current_momentum
 
-        # KIỂM TRA ĐƯỜNG ĐI ĐÃ LƯU
-        # Xem sương mù mới mở có lộ ra cái TƯỜNG (1) chặn current_path không
-        path_is_blocked = False
-        if self.current_path:
-            sim_pos = my_position
-            for m in self.current_path:
-                sim_pos = (sim_pos[0] + m.value[0], sim_pos[1] + m.value[1])
-                # Check for boundary conditions safely just in case
-                if 0 <= sim_pos[0] < self.memory_map.shape[0] and 0 <= sim_pos[1] < self.memory_map.shape[1]:
-                    if self.memory_map[sim_pos] == 1:
-                        path_is_blocked = True
-                        break
-                else:
-                    path_is_blocked = True
-                    break
-
-        # --- BƯỚC 2: QUYẾT ĐỊNH TARGET VÀ SEARCH ĐƯỜNG ĐI ---
-        should_replan = True
-        
-        if target is None:
-            # HOÀN TOÀN MẤT DẤU -> CHẾ ĐỘ THĂM DÒ TÌM KIẾM (EXPLORATION)
-            if not self.current_path or path_is_blocked:
-                self.current_path = self.explore_bfs(my_position)
-            should_replan = False
+            if IS_DEBUG_LOG:
+                print("Enemy spotted!")
+            list_of_action = self.a_star(my_position, enemy_position)
+        # Lost sight so go to last spotted pos
+        elif self.last_known_enemy_pos is not None:
+            if IS_DEBUG_LOG:
+                print("Lost sight of enemy, moving to last spotted destination")
+            list_of_action = self.a_star(my_position, self.last_known_enemy_pos)
+        # Patrol
         else:
-            # BIẾT VỊ TRÍ GHOST -> HỌC TĂNG CƯỜNG VÀ A*
-            maze_distances = self._get_maze_distances(my_position)
-            dist_to_enemy = maze_distances.get(target, self._manhattan_distance(my_position, target))
-            
-            if self.start_distance is None:
-                self.start_distance = dist_to_enemy
-            
-            self.steps_with_threshold += 1
-            # Đánh giá kết quả của 'ngưỡng' hiện tại sau mỗi 7 bước
-            if self.steps_with_threshold >= 7:
-                distance_closed = self.start_distance - dist_to_enemy
-                reward = distance_closed # Reward dương nếu rút ngắn khoảng cách, âm nếu bị bỏ xa
-                alpha = 0.5 # Tốc độ học (learning rate)
-                self.q_values[self.current_threshold] = (1 - alpha) * self.q_values[self.current_threshold] + alpha * reward
-                
-                # Chọn ngưỡng tiếp theo
-                if random.random() < self.exploration_rate: 
-                    self.current_threshold = random.choice(self.threshold_options) # Random threshold
-                else:
-                    self.current_threshold = max(self.threshold_options, key=lambda t: self.q_values[t]) # Chọn threshold tốt nhất
-                    
-                self.steps_with_threshold = 0
-                self.start_distance = dist_to_enemy
+            list_of_action = self.patrol(my_position)
 
-            # Tính toán việc lập lại đường đi nếu Ghost đã đi chệch hoặc vào gần ngưỡng
-            should_replan = (not self.current_path or 
-                             path_is_blocked or
-                             self.prev_enemy_pos is None or
-                             self._manhattan_distance(target, self.prev_enemy_pos) > 1 or
-                             dist_to_enemy <= self.current_threshold or
-                             momentum_changed) # Tính lại đường đi ngay khi Ghost đổi hướng
-                             
-            if should_replan:
-                if dist_to_enemy <= 2:
-                    # Nếu cực sát (<= 2 ô), lao thẳng tới tấn công Ghost
-                    target_pos = target
-                else:
-                    # Khi ở xa, dự đoán trước vị trí Ghost đến để chạy đón đầu
-                    target_pos = self.predict_enemy_move(target, my_position, maze_distances)
+        new_list_of_action = self._append_step(list_of_action)
+        self.available_path = list_of_action
 
-                self.current_path = self.astar(my_position, target_pos)
-                if not self.current_path: 
-                    self.current_path = self.astar(my_position, target)
 
-        # --- BƯỚC 3: DI CHUYỂN BẰNG ĐƯỜNG ĐÃ DỰ TÍNH VÀ CỘNG DỒN MOVE ---
-        if self.current_path and self.current_path[0] != Move.STAY:
-            move = self.current_path[0]
-            consecutive_steps = 0
-            
-            for m in self.current_path:
-                if m == move and consecutive_steps < self.pacman_speed:
-                    consecutive_steps += 1
-                else:
-                    break
-            
-            # Đảm bảo Pacman không tự giới hạn bản thân (giữ Speed-2 kể cả khi ô đích là 1 ô)
-            if len(self.current_path) == consecutive_steps and consecutive_steps < self.pacman_speed:
-                consecutive_steps = self.pacman_speed
-                
-            actual_steps = self._max_valid_steps(my_position, move, map_state, consecutive_steps)
-            if actual_steps > 0:
-                self.current_path = self.current_path[actual_steps:]
-                return (move, actual_steps)
-            else:
-                self.current_path = []
-        
-        # Mặc định random nếu kẹt đường
-        random_moves = [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]
-        random.shuffle(random_moves)
-        for move in random_moves:
-            if self._is_valid_move(my_position, move, map_state):
-                 return (move, 1)
-                 
-        return (Move.STAY, 1)
+        if len(new_list_of_action) > 0:
+            action = new_list_of_action[0]
+            return action
 
-    def _max_valid_steps(self, pos: tuple, move: Move, map_state: np.ndarray, max_steps: int) -> int:
-        steps = 0
-        current = pos
-        for _ in range(max_steps):
-            delta_row, delta_col = move.value
-            next_pos = (current[0] + delta_row, current[1] + delta_col)
-            if not self._is_valid_position(next_pos, map_state):
-                break
-            steps += 1
-            current = next_pos
-        return steps
-    
-    def _is_valid_move(self, pos: tuple, move: Move, map_state: np.ndarray) -> bool:
-        return self._max_valid_steps(pos, move, map_state, 1) == 1
-    
+        return Move.STAY, 1
+
+    # Helper methods
+    def _append_step(self, list_of_action: list[Node]):
+        """
+        Convert same move to step
+        """
+        if not list_of_action:
+            return []
+
+        res: list[tuple[Move, int]] = []
+
+        cur_move = list_of_action[0].action
+        cur_step = 0
+        for action in list_of_action:
+            if cur_step == self.pacman_speed or cur_move != action.action:
+                res.append((cur_move, cur_step))
+                cur_move = action.action
+                cur_step = 1
+
+            elif cur_move == action.action:
+                cur_step += 1
+
+
+        # Last move
+        res.append((cur_move, cur_step))
+        return res
+
     def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
+        """Check if a position is valid (not a wall and within bounds)."""
         row, col = pos
         height, width = map_state.shape
+
         if row < 0 or row >= height or col < 0 or col >= width:
             return False
-        return map_state[row, col] != 1
 
-fire_strength_default_value = 3
+        return not map_state[row, col] == 1
+
+
 class GhostAgent(BaseGhostAgent):
-    
     """
     Ghost (Hider) Agent - Goal: Avoid being caught
+
+    Implement your search algorithm to evade Pacman as long as possible.
+    Suggested algorithms: BFS (find furthest point), Minimax, Monte Carlo
     """
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # TODO: Initialize any data structures you need
         # Memory for limited observation mode
-        self.last_known_enemy_pos = (15, 10)
-        self.enemy_possible_position = []
-        self.my_previous_move = Move.STAY
-        self.panic_mode = 0 #when enemy is in sight, lock in!!!
-        self.burning_area = {}
-        self.opening_move = None
-    
-    def step(self, map_state: np.ndarray, 
-             my_position: tuple, 
+
+        self.last_known_enemy_pos = None
+
+        #Belief dictionary, where the Ghost believes the Pacman is
+        self.belief = {
+            (15, 10): 1.0,
+        }
+
+        self.maxDepth = 6
+        self.believePacAtStartPos = True
+        # Dictionary of nodes, saves walkways and walls based on the Ghost's vision
+        # If a node isn't in either sets, then it's an unknown node
+        self.knowledgeBase = { 
+            "known_walkways": set(),
+            "known_walls": set(),
+        }
+        self.previous_pos = None
+
+    def step(self, map_state: np.ndarray,  # Minmax
+             my_position: tuple,
              enemy_position: tuple,
              step_number: int) -> Move:
         """
         Decide the next move.
-        
+
         Args:
             map_state: 2D numpy array where 1=wall, 0=empty, -1=unseen (fog)
             my_position: Your current (row, col) in absolute coordinates
             enemy_position: Pacman's (row, col) if visible, None otherwise
             step_number: Current step number (starts at 1)
-            
+
         Returns:
             Move: One of Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT, Move.STAY
         """
+        # TODO: Implement your search algorithm here
+        self.updateKnowledge(my_position, map_state)
 
-        self.panic_mode = enemy_position != None
-        self._update_burning_area(enemy_position, my_position, map_state)
-        if (step_number <= 6 and self.panic_mode == 0): 
-            if (self.opening_move == None): 
-                if (random.random() < 0.7): self.opening_move = Move.RIGHT
-                else: self.opening_move = Move.LEFT
-            best_choice = self.opening_move
-            if (step_number >= 4):
-                best_choice = Move.DOWN
-        else: best_choice = self.MCTS(my_position, map_state, step_number)
-        
-        self.wildfire(map_state)
-        self.my_previous_move = best_choice
-        return best_choice
-    
-    def _update_enemy_position(self, enemy_position):
-        if (enemy_position == None): return
-        self.last_known_enemy_pos = enemy_position
-        self.enemy_possible_position = []
-
-    def _update_enemy_possible_positions(self, my_position, map_state):
-        if (self.enemy_possible_position == []):
-            first_best_position = None
-            second_best_position = None
-            best_score = float('+inf')
-            flag = 0
-            for new_position, _ in self._new_get_enemy_neighbors(self.last_known_enemy_pos, map_state):
-                current_score = self._get_distance_using_bfs(new_position, my_position, map_state)
-                if (current_score <= best_score):
-                    if (flag == 1):
-                        second_best_position = first_best_position
-                first_best_position = new_position
-                best_score = current_score
-                flag = 1
-            self.enemy_possible_position.append(first_best_position)
-            self.enemy_possible_position.append(second_best_position)
-            return
-        count = 0
-        for position in self.enemy_possible_position:
-            best_position = None
-            best_score = float('+inf')
-            for new_position, _ in self._new_get_enemy_neighbors(position, map_state):
-                current_score = self._get_distance_using_bfs(new_position, my_position, map_state)
-                if (current_score <= best_score):
-                    best_position = new_position
-                    best_score = current_score
-            self.enemy_possible_position.append(best_position)
-            count += 1
-            if (count > 2): break
-        
-        while (len(self.enemy_possible_position) > 2):
-            del(self.enemy_possible_position[0])
-
-        for pos in self.enemy_possible_position:
-            print(pos)
-    
-    def wildfire(self, map_state): 
-        new_burning_area = {}
-        
-        for area, fire_strength in self.burning_area.items():
-            for position, _ in self._new_get_enemy_neighbors(area, map_state):
-                if position not in self.burning_area:
-                    new_burning_area[position] = fire_strength_default_value
-            fire_strength -= 1
-            if (fire_strength != 0): new_burning_area[area] = fire_strength
-        
-        self.burning_area = new_burning_area
-
-    def _update_burning_area(self, enemy_position, my_position, map_state):
-        if (enemy_position != None):
-            self.burning_area.clear()
-            self.burning_area[enemy_position] = fire_strength_default_value 
+        if enemy_position is not None:
             self.last_known_enemy_pos = enemy_position
-            return
-        
-        for area in list(self.burning_area.keys()):
-            if (map_state[area[0], area[1]] == 0 or area == my_position):
-                del self.burning_area[area]
-        if (len(self.burning_area) == 0): self.burning_area[self.last_known_enemy_pos] = fire_strength_default_value
+            self.believePacAtStartPos = False
+        elif self.believePacAtStartPos == True:   # Starting position of Pacman
+            self.last_known_enemy_pos = (15, 10)
 
-    
-    def MCTS(self, my_position, map_state, step_number):
-        import math 
+        self.updateBelief(my_position, enemy_position, map_state)
 
-        class moveNode:
-            def _new_get_neighbors(self, position, map_state):
-                """Lấy danh sách điểm có thể đi (tránh tường số 1)."""
-                height, width = map_state.shape
-                neighbors = []
-                moves = [Move.UP, Move.DOWN, Move.RIGHT, Move.LEFT]
+        if IS_DEBUG_LOG:
+            print(self.belief)
 
-                for move in moves:
-                    nr, nc = position[0] + move.value[0], position[1] + move.value[1]
-                    if 0 <= nr < height and 0 <= nc < width:
-                        if map_state[nr, nc] != 1: 
-                            neighbors.append(((nr, nc), move))
-                return neighbors
+        threat = self.last_known_enemy_pos or enemy_position
 
-            def __init__(self, move, position, possible_moves, previous_enemy_position):
-                self.move = move
-                self.position = position
-                self.step_made = 0
-                self.max_possible_step = 0
-                self.child_nodes = []
-                self.total_simulation = 0
-                self.possible_next_move = possible_moves
-                self.current_enemy_position = None
-                self.previous_enemy_position = previous_enemy_position
+        best_move = Move.STAY
+        best_val = -999
+        alpha = -999
+        beta = 999
 
-            def _get_value(self):
-                if (self.total_simulation == 0):
-                    return float('+inf')
-                return self.step_made / self.max_possible_step
+        for move in [Move.UP, Move.DOWN, Move.RIGHT, Move.LEFT]:
+            if not self._is_valid_move(my_position, move, map_state):
+                continue
 
-            def _get_childs(self):
-                if (self.child_nodes == []): return None
-                return self.child_nodes
+            next_my_pos = self.updatePos(my_position, move)
 
-            def _get_previous_enemy_position(self):
-                return self.previous_enemy_position
+            val = self.minValue(map_state, next_my_pos, threat, 1, alpha, beta)
 
-            def _get_current_enemy_position(self):
-                return self.current_enemy_position
-            
-            def _generate_childs(self, possible_moves):
-                for next_pos, move in possible_moves:
-                    self.child_nodes.append(moveNode(move, next_pos, possible_moves))
-                return self.child_nodes
-            
-            def _update_stats(self, value):
-                self.step_made += value
-                self.total_simulation += 1
-                self.max_possible_step += 200
+            if self.previous_pos is not None and self.previous_pos == next_my_pos:
+                val -= 0.1
 
-            def _expand_a_child(self, map_state, previous_enemy_position):
-                if (self._is_fully_expanded()): return
-                to_be_expanded = random.choice(self.possible_next_move)
-                new_node = moveNode(to_be_expanded[1], to_be_expanded[0], self._new_get_neighbors(to_be_expanded[0], map_state), previous_enemy_position)
-                self.child_nodes.append(new_node)
-                self.possible_next_move.remove(to_be_expanded)
-                return new_node
+            if val > best_val:
+                best_val = val
+                best_move = move
 
-            def _is_fully_expanded(self):
-                return len(self.possible_next_move) == 0
-        
-        def _selection(root):
-            current_node = root
-            selection_chain = [ root ]
-            parent_node = root
-            while(current_node._is_fully_expanded()):
-                best_node = None
-                best_score = float('-inf')
-                for child in current_node._get_childs():
-                    child_value = child._get_value()
-                    if (child_value == float('+inf')): UCB1 = child_value
-                    else: UCB1 = child_value +  math.sqrt(2 * math.log(parent_node.total_simulation) / child.total_simulation)
-                    if (UCB1 > best_score):
-                        best_node = child
-                        best_score = UCB1
-                parent_node = current_node
-                current_node = best_node
-                selection_chain.append(best_node)
-            return selection_chain
+            # elif val == best_val:
 
-        def _expansion(node, previous_enemy_position):
-            return node._expand_a_child(map_state, previous_enemy_position)
+            alpha = max(alpha, best_val)
+        self.previous_pos = my_position
+        return best_move
 
-        def _simulate(node, step_number):
-            import random
-
-            def _pick_enemy_position():
-                if (self.enemy_possible_position != []):
-                    return random.choice(self.enemy_possible_position)
-                
-                return self.last_known_enemy_pos
-
-            def _new_pick_enemy_position():
-                if (len(self.burning_area) == 0): return self.last_known_enemy_pos
-                weight = list(self.burning_area.values())
-                keys = list(self.burning_area.keys())
-                return random.choices(keys, weights = weight, k = 1)[0]
-                
-
-            def _simulate_enemy(my_position, enemy_position):
-                import random
-                best_score = float('+inf')
-                best_next_positions = []
-                for new_position, _ in self._new_get_neighbors(enemy_position, map_state):
-                   current_score = self._manhattan_distance(new_position, my_position)
-                   if (best_score > current_score):
-                       best_next_positions = [new_position]
-                       best_score = current_score
-                   elif (best_score == current_score):
-                       best_next_positions.append(new_position)
-                if random.random() < 0.1:
-                    neighbors = self._new_get_neighbors(enemy_position, map_state)
-                    if neighbors:
-                        return random.choice(neighbors)[0]
-                return random.choice(best_next_positions) if best_next_positions else None
-            
-            def _simulate_ghost(my_position, enemy_position):
-                best_score = float('-inf')
-                best_next_positions = []
-                for new_position, _ in self._new_get_neighbors(my_position, map_state):
-                   current_score = self._manhattan_distance(new_position, enemy_position)
-                   if (best_score < current_score):
-                       best_next_positions = [new_position]
-                       best_score = current_score
-                   elif (best_score == current_score):
-                       best_next_positions.append(new_position)
-                if random.random() < 0.3:
-                    neighbors = self._new_get_neighbors(my_position, map_state)
-                    if neighbors:
-                        return random.choice(neighbors)[0]
-                return random.choice(best_next_positions) if best_next_positions else None
-            
-            my_current_position = node.position
-
-            if (node.previous_enemy_position == None): current_enemy_position = _new_pick_enemy_position()
-            else: current_enemy_position = node.previous_enemy_position
-            
-            while (step_number < 200):
-
-                enemy_next_position = _simulate_enemy(my_current_position, current_enemy_position)
-                my_next_position = _simulate_ghost(my_current_position, current_enemy_position)
-                if (node.current_enemy_position == None): node.current_enemy_position = enemy_next_position
-                if (self._manhattan_distance(enemy_next_position, my_next_position) < 2): return step_number
-                step_number += 1
-                current_enemy_position = enemy_next_position
-                my_current_position = my_next_position
-            return step_number
-
-        def _back_propagation(selection_chain, simulation_result):
-            for node in selection_chain:
-                node._update_stats(simulation_result)
-                
-        root = moveNode(None, my_position, self._new_get_neighbors(my_position, map_state), None)
-        while (root.total_simulation < 100):
-            
-            selection_chain = _selection(root)
-            node = selection_chain[-1]
-            child = _expansion(node, node.current_enemy_position)
-            simulation_result = _simulate(child, step_number + len(selection_chain) - 1)
-            new_chain = selection_chain + [child]
-            _back_propagation(new_chain, simulation_result)
-
-        
-        best_score = float('-inf')
-        best_choice = Move.STAY
-        for node in root.child_nodes:
-            current_score = node._get_value()
-            if (current_score == best_score and node.move == self._get_reverse_move(self.my_previous_move) and random.random() < 0.8): continue
-            if (current_score > best_score):
-                if (node.move == self._get_reverse_move(self.my_previous_move) and random.random() < (best_score / current_score) + 0.1 and self.panic_mode != 1): continue
-                best_choice = node
-                best_score = current_score
-        if (best_choice == Move.STAY): return Move.STAY
-        return best_choice.move
-
-        
     # Helper methods (you can add more)
 
-    def _get_neighbors(self, pos, map_state):
-        """Get all valid neighboring positions and their moves."""
-        neighbors = []
-        allMove = [ Move.UP, Move.RIGHT, Move.LEFT, Move.DOWN]
-        for move in allMove:
-            next_pos = self._apply_move(pos, move)
-            if self._is_valid_position(next_pos, map_state):
-                neighbors.append((next_pos, move))
-        
-        return neighbors
-    
-    def _get_pacman_neighbors(self, pos, map_state):
-        """Get all valid neighboring positions and their moves."""
-        neighbors = []
-        allMove = [  Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT ]
-        for move in allMove:
-            next_pos = self._apply_move(pos, move)
-            if self._is_valid_position(next_pos, map_state):
-                neighbors.append((next_pos, move))
-        
-        return neighbors
+    def updateKnowledge(self, myPos: tuple, map: np.ndarray): # 1 -> Wall, 0 -> walkway, -1 -> unseen
+        # Evaluate rows ontop and below to Ghost to update its knowledge
+        for i in range(1, 6, 1):
+            checkPosUp = (myPos[0] - i, myPos[1])
+            if self.positionValue(checkPosUp, map) == 1: # If it hits a wall, it stops updating and break the loop
+                self.knowledgeBase["known_walls"].add(checkPosUp)
+                break
+            elif self.positionValue(checkPosUp, map) == 0: # If it hits an empty space, it can still see so keep looping
+                self.knowledgeBase["known_walkways"].add(checkPosUp)
+        for i in range(1, 6, 1):
+            checkPosDown = (myPos[0] + i, myPos[1])
+            if self.positionValue(checkPosDown, map) == 1: # If it hits a wall, it stops updating and break the loop
+                self.knowledgeBase["known_walls"].add(checkPosDown)
+                break
+            elif self.positionValue(checkPosDown, map) == 0: # If it hits an empty space, it can still see so keep looping
+                self.knowledgeBase["known_walkways"].add(checkPosDown)
 
-    def _get_enemy_neighbors(self, enemy_pos, map_state):
-        neighbors = self._get_pacman_neighbors(enemy_pos, map_state)
-        new_neighbors = neighbors
-        for new_pos, move in neighbors:
-            new_pos = self._apply_move(new_pos, move)
-            if self._is_valid_position(new_pos, map_state):
-                new_neighbors.append((new_pos, move))
-        return new_neighbors
-    
-    def _manhattan_distance(self, pos1, pos2):
-            """Calculate Manhattan distance between two positions."""
-            return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
-            # Helper methods (you can add more)
-    
-    def _apply_move(self, pos, move):
-        """Apply a move to a position, return new position."""
-        delta_row, delta_col = move.value
-        return (pos[0] + delta_row, pos[1] + delta_col)
+        # Evaluate columns to the left and right of Ghost to update its knowledge.
+        for i in range(1, 6, 1):
+            checkPosLeft = (myPos[0], myPos[1] - i)
+            if self.positionValue(checkPosLeft, map) == 1:
+                self.knowledgeBase["known_walls"].add(checkPosLeft)
+                break
+            elif self.positionValue(checkPosLeft, map) == 0:
+                self.knowledgeBase["known_walkways"].add(checkPosLeft)
+        for i in range(1, 6, 1):
+            checkPosRight = (myPos[0], myPos[1] + i)
+            if self.positionValue(checkPosRight, map) == 1:
+                self.knowledgeBase["known_walls"].add(checkPosRight)
+                break
+            elif self.positionValue(checkPosRight, map) == 0:
+                self.knowledgeBase["known_walkways"].add(checkPosRight)
+
+    def get_memory_path(self, map_state: np.ndarray, my_position: tuple):
+        row, col = my_position
+        height, width = map_state.shape
+        if row < 0 or row >= height or col < 0 or col >= width:
+            return -1
+        current_val = map_state[row][col]
+        if current_val != -1:
+            return current_val
+        if my_position in self.knowledgeBase["known_walkways"]:
+            return 0
+        if my_position in self.knowledgeBase["known_walls"]:
+            return 1
+        return -1
+
+    def updateBelief(self, myPos: tuple, pacPos: tuple, map: np.ndarray):
+        if pacPos == None and len(self.belief) > 0: # Don't see Pacman -> Start predicting
+            newBelief = {}
+            for believeNodes in self.belief.copy():
+                degrees = 0
+                up = (believeNodes[0] - 1, believeNodes[1])
+                down = (believeNodes[0] + 1, believeNodes[1])
+                left = (believeNodes[0], believeNodes[1] - 1)
+                right = (believeNodes[0], believeNodes[1] + 1)
+
+                checkList = {
+                                up : 0, 
+                                down : 0, 
+                                left : 0, 
+                                right : 0
+                            }
+
+                for node in checkList.copy():
+                    if node in self.knowledgeBase["known_walkways"]:
+                        degrees += 1
+                        # dis = self.manHatDis(myPos, node)
+                        # checkList.update({node : dis})
+                    else:
+                        del checkList[node]
+                if degrees == 0:
+                    return
+                baseProbability = 1 / degrees
+                self.belief.clear()
+                # maxNode = max(checkList, key = checkList.get)
+                
+                for node in checkList:
+                #     deviation = (checkList[node] - checkList[maxNode]) / checkList[maxNode]
+                    # self.belief.update({node : baseProbability - deviation})
+                    newBelief.update({node: baseProbability})
+            self.belief = newBelief.copy()
+            # self.normalize()
+        else:
+            self.belief.clear()
+            self.belief.update({pacPos: 1.0})
+
+    def normalize(self):
+        currTotalProb = 0
+        for prob in self.belief.values():
+            currTotalProb += prob
+        alpha = 1 / currTotalProb
+        for node in self.belief:
+            probability = self.belief[node]
+            self.belief.update({node: probability * alpha})
     
     def _is_valid_move(self, pos: tuple, move: Move, map_state: np.ndarray) -> bool:
         """Check if a move from pos is valid."""
         delta_row, delta_col = move.value
         new_pos = (pos[0] + delta_row, pos[1] + delta_col)
         return self._is_valid_position(new_pos, map_state)
-    
+
     def _is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
         """Check if a position is valid (not a wall and within bounds)."""
         row, col = pos
         height, width = map_state.shape
-        
+
         if row < 0 or row >= height or col < 0 or col >= width:
             return False
-        
-        return map_state[row, col] == 0
-    
-    def _get_reverse_move(self, move):
-        if (move == Move.STAY): return move
-        move_list = { Move.DOWN : Move.UP,
-                      Move.UP : Move.DOWN,
-                      Move.RIGHT : Move.LEFT,
-                      Move.LEFT : Move.RIGHT}
-        return move_list[move]
 
-    def _new_get_neighbors(self, position, map_state):
-        """Lấy danh sách điểm có thể đi (tránh tường số 1)."""
+        return self.get_memory_path(map_state, pos) != 1
+
+    def positionValue(self, pos: tuple, map_state: np.ndarray): # Like _is_valid_position but returns the value of that position
+        row, col = pos
         height, width = map_state.shape
-        neighbors = []
-        moves = [Move.UP, Move.DOWN, Move.RIGHT, Move.LEFT]
 
-        for move in moves:
-            nr, nc = position[0] + move.value[0], position[1] + move.value[1]
-            if 0 <= nr < height and 0 <= nc < width:
-                if map_state[nr, nc] != 1: 
-                    neighbors.append(((nr, nc), move))
-        return neighbors
-    
-    def _new_get_enemy_neighbors(self, enemy_pos, map_state):
-        
+        if row < 0 or row >= height or col < 0 or col >= width:
+            return -1
+
+        return map_state[row, col]
+
+    def pac_max_valid_steps(self, pos: tuple, move: Move, map_state: np.ndarray, max_steps: int) -> int:
+        steps = 0
+        current = pos
+        for _ in range(max_steps):
+            delta_row, delta_col = move.value
+            next_pos = (current[0] + delta_row, current[1] + delta_col)
+            if not self.pac_is_valid_position(next_pos, map_state):
+                break
+            steps += 1
+            current = next_pos
+        return steps
+
+    def pac_is_valid_move(self, pos: tuple, move: Move, map_state: np.ndarray) -> bool:
+        """Check if a move from pos is valid for at least one step."""
+        return self.pac_max_valid_steps(pos, move, map_state, 1) == 1
+
+    def pac_is_valid_position(self, pos: tuple, map_state: np.ndarray) -> bool:
+        """Check if a position is valid (not a wall and within bounds)."""
+        row, col = pos
         height, width = map_state.shape
-        neighbors = self._new_get_neighbors(enemy_pos, map_state)
-        new_neighbors = neighbors.copy()
-        for new_pos, move in neighbors:
-            nr, nc = new_pos[0] + move.value[0], new_pos[1] + move.value[1]
-            if 0 <= nr < height and 0 <= nc < width:
-                if map_state[nr, nc] != 1: 
-                    new_neighbors.append(((nr, nc), move))
-        return new_neighbors
-    
-    def _get_maze_distances(self, map_state, start):
-        """Dùng BFS để tìm khoảng cách thực tế trong memory map."""
-        queue = deque([(start, 0)])
-        visited = {start: 0}
-        while queue:
-            current, dist = queue.popleft()
-            for next_pos, _ in self._new_get_neighbors(current, map_state):
-                if next_pos not in visited:
-                    visited[next_pos] = dist + 1
-                    queue.append((next_pos, dist + 1))
-        return visited
-    
-    def _get_distance_using_bfs(self, start, goal, map_state):
-        from collections import deque
-        queue = deque([(start, 0)])
-        visited = {start: 0}
 
-        while queue:
-            current_pos, dist = queue.popleft()
-            for next_pos, _ in self._new_get_neighbors(current_pos, map_state):
-                if next_pos == goal:
-                    return dist + 1
-                if next_pos not in visited:
-                    visited[next_pos] = dist + 1
-                    queue.append((next_pos, dist + 1))
-        return 0
+        if row < 0 or row >= height or col < 0 or col >= width:
+            return False
+
+        return self.get_memory_path(map_state, pos) != 1
+
+    def minValue(self, map: np.ndarray, myPos: tuple, threatPos: tuple, depth: int, alpha: int, beta: int):
+        """
+        Pac value
+        """
+        if self.terminal(myPos, threatPos) or depth == self.maxDepth:
+            return self.utility(myPos, threatPos, map, depth)
+
+        val = 999
+
+        avai_actions = set()
+
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            if self.pac_is_valid_move(threatPos, move, map):
+                maxSteps = self.pac_max_valid_steps(threatPos, move, map, 2)
+
+                for i in range(1, maxSteps + 1, 1):
+                    avai_actions.add((move, i))
+
+        for move in avai_actions:
+            val = min(val,
+                      self.maxValue(map, myPos, self.updatePos(threatPos, move[0], move[1]), depth + 1, alpha, beta))
+            if val <= alpha:
+                return val
+
+            beta = min(beta, val)  # giá trị tốt nhất (nhỏ nhất) mà pacman có thể đạt được
+
+        return val
+
+    def maxValue(self, map: np.ndarray, myPos: tuple, threatPos: tuple, depth: int, alpha: int, beta: int):
+        """
+        Ghost value
+        """
+        if self.terminal(myPos, threatPos) or depth == self.maxDepth:
+            return self.utility(myPos, threatPos, map, depth)  # Not GameOver
+
+        val = -999
+        avai_actions = set()
+
+        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            if self._is_valid_move(myPos, move, map):
+                avai_actions.add(move)
+
+        for move in avai_actions:
+            val = max(val, self.minValue(map, self.updatePos(myPos, move), threatPos, depth + 1, alpha, beta))
+            if val >= beta:
+                return val
+
+            alpha = max(alpha, val)  # giá trị tốt nhất (lớn nhất) mà ghost có thể đạt được
+
+        return val
+
+    def manHatDis(self, myPos: tuple, threatPos: tuple):
+        return abs(myPos[0] - threatPos[0]) + abs(myPos[1] - threatPos[1])
+
+    def updatePos(self, pos: tuple, move: Move, steps=1):
+        x, y = pos
+        match move:
+            case Move.UP:
+                x -= 1 * steps
+            case Move.DOWN:
+                x += 1 * steps
+            case Move.LEFT:
+                y -= 1 * steps
+            case Move.RIGHT:
+                y += 1 * steps
+        return x, y
+
+    def utility(self, ghostPos, pacPos, map, depth):
+        dis = self.manHatDis(ghostPos, pacPos)
+
+        if dis < 2:  # Pacman wins
+            return -2 * self.maxDepth + depth
+
+        score = 0
+
+        if ghostPos[0] == pacPos[0] and self.checkWall(map, ghostPos, pacPos, True):
+            score = 1
+        elif ghostPos[1] == pacPos[1] and self.checkWall(map, ghostPos, pacPos, False):
+            score = 1
+
+        return dis + score
+
+    def terminal(self, ghostPos, pacPos):
+        if self.manHatDis(ghostPos, pacPos) < 2:  # Pacman wins
+            return True
+        return False  # Game not over
+
+    def checkWall(self, map: np.ndarray, ghostPos: tuple, pacPos: tuple, sameRow: bool) -> bool:
+        if sameRow:
+            for i in range(min(ghostPos[1], pacPos[1]), max(ghostPos[1], pacPos[1]) + 1):
+                if self.get_memory_path(map, (ghostPos[0], i)) == 1:  # There is a wall
+                    return False
+            return True
+        for i in range(min(ghostPos[0], pacPos[0]), max(ghostPos[0], pacPos[0]) + 1):
+            if self.get_memory_path(map, (i, ghostPos[1])) == 1: # There is a wall
+                return False
+        return True

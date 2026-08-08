@@ -95,16 +95,88 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
 if __name__ == "__main__":
     # Set up argparse to handle command line inputs
     parser = argparse.ArgumentParser(description="Run automated benchmarks for Pacman vs Ghost.")
-    parser.add_argument('--seek', type=str, required=True, help="Folder name of the Pacman agent.")
-    parser.add_argument('--hide', type=str, required=True, help="Folder name of the Ghost agent.")
+    
+    # Optional arguments for single runs
+    parser.add_argument('--seek', type=str, help="Folder name of the Pacman agent.")
+    parser.add_argument('--hide', type=str, help="Folder name of the Ghost agent.")
     parser.add_argument('--runs', type=int, default=50, help="Number of games to simulate (default: 50).")
     parser.add_argument('--save', action='store_true', help="Flag to save results to a CSV file.")
     
+    # The --all flag for the round-robin tournament
+    parser.add_argument('--all', action='store_true', help="Run a full round-robin benchmark for manually specified agents.")
+    
     args = parser.parse_args()
 
-    run_native_benchmark(
-        pacman_id=args.seek, 
-        ghost_id=args.hide, 
-        num_runs=args.runs,
-        save_csv=args.save
-    )
+    if args.all:
+        # ---------------------------------------------------------
+        # MANUALLY TYPE THE NAMES OF THE AGENTS YOU WANT TO TEST HERE
+        # ---------------------------------------------------------
+        pacman_names = [
+            "stewy", 
+            "kmy_fog",
+            "updated_thuy",
+            "namchan_fog",
+            "Ablind",
+            "Cblind",
+            "source_code/02",
+            "source_code/03",
+            "source_code/04",
+            "source_code/05",
+            "source_code/07",
+            "source_code/08",
+            "source_code/09",
+            "source_code/10",
+            "source_code/12",
+            "source_code/15",
+            "source_code/16",
+        ]
+        
+        ghost_names = [
+            "stewy", 
+            # "kmy_fog",
+            # "updated_thuy",
+            # "namchan_fog",
+            # "Ablind",
+            # "Cblind",
+            # "source_code/02",
+            # "source_code/03",
+            # "source_code/04",
+            # "source_code/05",
+            # "source_code/07",
+            # "source_code/08",
+            # "source_code/09",
+            # "source_code/10",
+            # "source_code/12",
+            # "source_code/15",
+            # "source_code/16",
+            # Add more Ghost agents here...
+        ]
+        
+        print(f"🚀 Starting manual round-robin benchmark ({args.runs} runs per matchup)...\n")
+        
+        # The Nested Loop: Every Pacman vs Every Ghost
+        for pacman in pacman_names:
+            for ghost in ghost_names:
+                # Optional: If you want to skip an agent fighting itself, uncomment the next line:
+                # if pacman == ghost: continue
+                
+                run_native_benchmark(
+                    pacman_id=pacman, 
+                    ghost_id=ghost, 
+                    num_runs=args.runs,
+                    save_csv=args.save
+                )
+        print("\n✅ Full benchmark complete!")
+        
+    else:
+        # Fallback to the original single match-up mode
+        if not args.seek or not args.hide:
+            print("❌ Error: You must provide both --seek and --hide arguments if not using --all.")
+            sys.exit(1)
+            
+        run_native_benchmark(
+            pacman_id=args.seek, 
+            ghost_id=args.hide, 
+            num_runs=args.runs,
+            save_csv=args.save
+        )
