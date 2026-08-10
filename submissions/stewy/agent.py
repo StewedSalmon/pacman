@@ -40,6 +40,21 @@ class PacmanAgent(BasePacmanAgent):
         self.previous_pos = None
         self.patrol_target = None
         
+        # for corner sweep phase
+        center_r = self.height // 2
+        center_c = self.width // 2
+
+        self.map_corners = [
+            (0, self.width - 1),               # 1. Top Right
+            (center_r, self.width - 1),        # 2. Midpoint Right
+            (self.height - 1, self.width - 1), # 3. Bottom Right
+            (self.height - 1, center_c),       # 4. Midpoint Bottom
+            (self.height - 1, 0),              # 5. Bottom Left
+            (center_r, 0),                     # 6. Midpoint Left
+            (0, 0),                             # 7. Top Left
+            (0, center_c)                      # 8. Midpoint Top
+        ]
+        
     def get_BFS_map(self, start: tuple):
         """Retrieves or calculates BFS map from start position"""
         if start in self.map_BFS_cache:
@@ -112,43 +127,124 @@ class PacmanAgent(BasePacmanAgent):
                         break
             return max_eval
         
+    
+        
     def explore_map(self, my_position: tuple, map_state: np.ndarray):
         """Run BFS to find the nearest frontier"""
+
+        # EARLY GAME: move towards the center of the map
         if self.early_game:
-            if my_position[0] <= 9:
+            # calculate the center
+            center_r, center_c = (self.height - 2) // 2, (self.width - 2) // 2
+            
+            # if the exact center is a wall, find the closest known valid floor tile
+            if self.explored_map[center_r, center_c] == 1:
+               # Find all currently unexplored tiles
+                unexplored_tiles = [(r, c) for r in range(self.height) for c in range(self.width) if self.explored_map[r, c] == -1]
+                # Set target to the nearest -1 tile to the true center
+                if unexplored_tiles:
+                    center_target = min(unexplored_tiles, key=lambda pos: abs(pos[0] - center_r) + abs(pos[1] - center_c))
+                else:
+                    center_target = (center_r, center_c)
+            else:
+                center_target = (center_r, center_c)
+
+            # end early game if the target tile is within our 5-tile line of sight
+            if center_target in self.get_visible_cells(my_position):
                 self.early_game = False
             else:
-                center_target = (9, 10)
-                best_move = Move.STAY
-                best_steps = 1
-                min_dist = float('inf')
+                self.get_BFS_map(my_position)
+                distances, parent = self.map_BFS_cache.get(my_position, ({}, {}))
                 
-                options = self.get_sprint_options(my_position)
-                for move, steps, landing_pos in options:
-                    if move == Move.STAY:
-                        continue
-                    
-                    row_dist = abs(landing_pos[0] - center_target[0])
-                    col_dist = abs(landing_pos[1] - center_target[1])
-                    dist = row_dist * 2 + col_dist
-                    
-                    if hasattr(self, 'previous_pos') and landing_pos == self.previous_pos:
-                        dist += 100
-                    
-                    # Tie-breaker: if distance is equal, prefer the move that takes more steps (sprinting)
-                    if dist < min_dist or (dist == min_dist and steps > best_steps):
-                        min_dist = dist
-                        best_move = move
-                        best_steps = steps
+                # Find all known frontiers (safe tiles adjacent to -1)
+                frontiers = [pos for pos in distances if self.is_frontier(pos)]
                 
-                # If a valid move towards the center exists, take it. 
-                # Otherwise, something is blocking us, so turn off early game.
-                if best_move != Move.STAY:
-                    return (best_move, best_steps)
+                if frontiers:
+                    # Pick the frontier closest to our center target
+                    best_frontier = min(frontiers, key=lambda f: abs(f[0] - center_target[0]) + abs(f[1] - center_target[1]))
+                    # Reconstruct path to this frontier
+                    path = []
+                    curr = best_frontier
+                    while curr != my_position:
+                        prev, move_taken = parent[curr]
+                        path.append(move_taken)
+                        curr = prev
+                    path.reverse()
+                    
+                    if path:
+                        next_move = path[0]
+                        consecutive_steps = 0
+                        for m in path:
+                            if m == next_move:
+                                consecutive_steps += 1
+                            else:
+                                break
+                                
+                        options = self.get_sprint_options(my_position)
+                        best_steps = 1
+                        for move, steps, _ in options:
+                            if move == next_move and steps <= consecutive_steps and steps > best_steps:
+                                best_steps = steps
+                        return (next_move, best_steps)
                 else:
+                    # Failsafe if blocked or no frontiers exist
                     self.early_game = False
-
-        # --- NORMAL FRONTIER EXPLORATION ---
+                
+        # CORNER SWEEP
+        elif self.map_corners:
+            # End Condition for this corner: If it's in our line of sight
+            while self.map_corners and self.map_corners[0] in self.get_visible_cells(my_position):
+                self.map_corners.pop(0)
+            
+            if not self.map_corners:
+                pass # Falls through to NORMAL FRONTIER EXPLORATION
+                
+            else:
+                target_corner = self.map_corners[0] 
+                
+                # RUN BFS FRESH EVERY TICK
+                self.get_BFS_map(my_position)
+                distances, parent = self.map_BFS_cache.get(my_position, ({}, {}))
+                
+                frontiers = [pos for pos in distances if self.is_frontier(pos)]
+                
+                if frontiers:
+                    # Pick the frontier closest to the target corner
+                    best_frontier = min(frontiers, key=lambda f: get_mahattan_distance(f, target_corner))
+                    
+                    # Reconstruct safe path to this frontier
+                    path = []
+                    curr = best_frontier
+                    while curr != my_position:
+                        prev, move_taken = parent[curr]
+                        path.append(move_taken)
+                        curr = prev
+                    path.reverse()
+                    
+                    if len(path) > 0:
+                        next_move = path[0]
+                        
+                        # SAFE SPRINTING
+                        consecutive_path_steps = 0
+                        for move in path:
+                            if move == next_move:
+                                consecutive_path_steps += 1
+                            else:
+                                break
+                                
+                        options = self.get_sprint_options(my_position)
+                        best_steps = 1
+                        for move, steps, _ in options:
+                            if move == next_move and steps <= consecutive_path_steps and steps > best_steps:
+                                best_steps = steps
+                                
+                        return (next_move, best_steps)
+                    
+                else:
+                    # Failsafe: No frontiers exist
+                    self.map_corners.pop(0) 
+                               
+        # NORMAL FRONTIER EXPLORATION
         self.get_BFS_map(my_position)
         distance, parent = self.map_BFS_cache.get(my_position, ({}, {}))
         
@@ -260,15 +356,28 @@ class PacmanAgent(BasePacmanAgent):
             if count > 0:
                 self.heatmap[non_walls] = 100 / count
     
+    def _validate_corners(self):
+        """Runs exactly once to snap any wall waypoints to the nearest valid fog tile."""
+        valid_corners = []
+        unexplored_tiles = [(r, c) for r in range(self.height) for c in range(self.width) if self.explored_map[r, c] == -1]
+        
+        for corner in self.map_corners:
+            if self.explored_map[corner] == 1:
+                if unexplored_tiles:
+                    # Snap the wall to the closest -1 tile
+                    new_corner = min(unexplored_tiles, key=lambda pos: abs(pos[0] - corner[0]) + abs(pos[1] - corner[1]))
+                    valid_corners.append(new_corner)
+            else:
+                valid_corners.append(corner)
+                
+        self.map_corners = valid_corners
+    
     def update_explored_map(self, map_state: np.ndarray):
-        """Update the explored map based on the current position and map state."""
-        for r in range(self.height):
-            for c in range(self.width):
-                if map_state[r, c] != -1:
-                    if map_state[r, c] == 2 or map_state[r, c] == 3: # 2 is Pacman, 3 is Ghost
-                        self.explored_map[r, c] = 0  # Mark agent positions as valid
-                    else:
-                        self.explored_map[r, c] = map_state[r, c]
+        """Registers all walls globally, remembers seen paths"""
+        self.explored_map[map_state == 1] = 1  # Mark walls 
+        self.explored_map[map_state == 2] = 0  # Mark Pacman as valid empty tile
+        # Log currently visible paths (0) as safe floor (0)
+        self.explored_map[(map_state == 0)] = 0
         
     def is_tile_valid(self, pos: tuple):
         """Check if a position is valid (not a wall)"""
@@ -460,9 +569,15 @@ class PacmanAgent(BasePacmanAgent):
              step_number: int):
         
         self.map_BFS_cache.clear()
-        
+  
         # Update explored map with current position and map state
         self.update_explored_map(map_state)
+        
+        # validate corners only once at the start of the game
+        if not hasattr(self, 'corners_validated'):
+            self._validate_corners()
+            self.corners_validated = True
+        
         current_vision = self.get_visible_cells(my_position)
         self.update_heatmap(current_vision, enemy_position)
         
