@@ -51,8 +51,8 @@ class GhostAgent(BaseGhostAgent):
     def _analyze_topology_on_step_1(self, map_state: np.ndarray, ghost_spawn: tuple):
         """
         Runs on Step 1.
-        Builds the complete maze graph from non-wall tiles (map_state != 1)
-        and extracts dead ends and dynamic hiding junctions.
+        Extracts dead ends, identifies the Right Corner for the early slip,
+        and targets the Bottom-Half Island for continuous endgame looping.
         """
         non_walls = set()
         for r in range(self.height):
@@ -60,17 +60,17 @@ class GhostAgent(BaseGhostAgent):
                 if map_state[r, c] != 1:
                     non_walls.add((r, c))
 
-        # Adjacency list for all non-wall tiles
+        # Build adjacency favoring RIGHT / DOWN steps for micro tie-breakers
         adj = {}
         for r, c in non_walls:
             neighbors = []
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            for dr, dc in [(0, 1), (1, 0), (-1, 0), (0, -1)]:
                 nr, nc = r + dr, c + dc
                 if (nr, nc) in non_walls:
                     neighbors.append((nr, nc))
             adj[(r, c)] = neighbors
 
-        # Iterative Dead-End Pruning (Collapse degree-1 branches)
+        # Iterative Dead-End Pruning
         dead_ends = set()
         deg = {node: len(nbrs) for node, nbrs in adj.items()}
         queue = [node for node, d in deg.items() if d == 1]
@@ -93,7 +93,7 @@ class GhostAgent(BaseGhostAgent):
             if len([n for n in adj[node] if n not in dead_ends]) >= 3
         ]
 
-        # BFS from Ghost Spawn across non-wall graph to calculate structural distances
+        # BFS from Ghost Spawn across non-wall tiles to calculate distances
         distances = {ghost_spawn: 0}
         bfs_queue = deque([ghost_spawn])
         while bfs_queue:
@@ -103,25 +103,36 @@ class GhostAgent(BaseGhostAgent):
                     distances[nbr] = distances[curr] + 1
                     bfs_queue.append(nbr)
 
-        # Sort junctions by structural distance from ghost spawn (furthest first)
-        junctions.sort(key=lambda j: distances.get(j, 0), reverse=True)
+        # 1. WAYPOINT 0: Right Corner (Down-Right Slip to dodge center rush)
+        right_corner_candidates = sorted(
+            junctions if junctions else list(safe_nodes),
+            key=lambda j: distances.get(j, 0) + (j[0] * 4) + (j[1] * 4),
+            reverse=True
+        )
+        right_corner = right_corner_candidates[0] if right_corner_candidates else ghost_spawn
 
-        if len(junctions) >= 4:
-            # Pick a diverse set of junctions across different distance tiers
-            self.dynamic_waypoints = [
-                junctions[0],
-                junctions[len(junctions) // 3],
-                junctions[(2 * len(junctions)) // 3],
-                junctions[-1]
-            ]
-        elif junctions:
-            self.dynamic_waypoints = junctions
+        # 2. WAYPOINTS 1-3: Pacman Base Island Hubs (Bottom-Center)
+        bottom_junctions = [j for j in junctions if j[0] > self.height // 2]
+        center_c = self.width // 2
+        
+        if len(bottom_junctions) >= 3:
+            # Sort bottom junctions to heavily favor the CENTER column (locking onto the base island)
+            bottom_junctions.sort(key=lambda j: abs(j[1] - center_c))
+            island_waypoints = bottom_junctions[:3]
+        elif bottom_junctions:
+            island_waypoints = bottom_junctions
         else:
-            # Fallback to safe nodes if layout is simple/linear
-            safe_list = list(safe_nodes)
-            safe_list.sort(key=lambda n: distances.get(n, 0), reverse=True)
-            self.dynamic_waypoints = safe_list[:4] if safe_list else [ghost_spawn]
+            # Fallback for simple maps
+            bottom_safe = [n for n in safe_nodes if n[0] > self.height // 2]
+            bottom_safe.sort(key=lambda j: abs(j[1] - center_c))
+            island_waypoints = bottom_safe[:3] if bottom_safe else [ghost_spawn]
 
+        # Assemble explicit sequence: [1. Right Corner Slip] -> [2-4. Base Island Orbit]
+        self.dynamic_waypoints = [right_corner] + [w for w in island_waypoints if w != right_corner]
+        self.topology_analyzed = True
+
+        # Assemble explicit sequence: [1. Right Corner Slip] -> [2-4. Bottom Half Island Orbit]
+        self.dynamic_waypoints = [right_corner] + [w for w in island_waypoints if w != right_corner]
         self.topology_analyzed = True
 
     def update_explored_map(self, map_state: np.ndarray):
@@ -157,7 +168,7 @@ class GhostAgent(BaseGhostAgent):
 
         while queue:
             current = queue.popleft()
-            for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.DOWN, Move.RIGHT, Move.UP, Move.LEFT]:
                 nr, nc = current[0] + move.value[0], current[1] + move.value[1]
                 next_pos = (nr, nc)
 
@@ -173,7 +184,7 @@ class GhostAgent(BaseGhostAgent):
     def get_visible_cells(self, pos: tuple) -> set:
         """Gets all line-of-sight cells in straight rays until a wall."""
         visible = {pos}
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        for move in [Move.RIGHT, Move.DOWN, Move.UP, Move.LEFT]:
             dr, dc = move.value
             r, c = pos
             for _ in range(self.width):
@@ -187,17 +198,28 @@ class GhostAgent(BaseGhostAgent):
         return visible
 
     def pick_next_waypoint(self, my_position: tuple) -> tuple:
-        """Selects the next unvisited dynamic waypoint, resetting when all are visited."""
+        """
+        Sequential Waypoint Selection:
+        1. Moves to Right Corner first.
+        2. Routes to Bottom-Half Island nodes.
+        3. Once arrived at the island, loops strictly among the bottom-half island nodes forever.
+        """
         candidates = [w for w in self.dynamic_waypoints if w not in self.visited_waypoints and w != my_position]
+        
+        # When all waypoints have been visited, reset visited_waypoints to KEEP the Right Corner marked as visited.
+        # This prevents the Ghost from ever travelling back to the Right Corner, locking it into the Bottom Island loop.
         if not candidates:
-            self.visited_waypoints.clear()
-            candidates = [w for w in self.dynamic_waypoints if w != my_position]
+            if len(self.dynamic_waypoints) > 1:
+                self.visited_waypoints = [self.dynamic_waypoints[0]]  # Lock out Right Corner (index 0)
+            else:
+                self.visited_waypoints.clear()
+            candidates = [w for w in self.dynamic_waypoints if w not in self.visited_waypoints and w != my_position]
 
         if not candidates:
             return my_position
 
-        # Pick candidate furthest from current position for long transit sweeps
-        return max(candidates, key=lambda w: get_manhattan_distance(my_position, w))
+        # Maintain strict sequence order (candidates[0]) rather than max-distance reordering
+        return candidates[0]
 
     def get_safe_transit_move(self, current_pos: tuple, target_pos: tuple) -> Move:
         """Finds the best safe move towards target using BFS pathing."""
@@ -214,7 +236,7 @@ class GhostAgent(BaseGhostAgent):
         best_move = Move.STAY
         min_dist = float('inf')
 
-        for move in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+        for move in [Move.DOWN, Move.RIGHT, Move.UP, Move.LEFT]:
             next_pos = (current_pos[0] + move.value[0], current_pos[1] + move.value[1])
             if self.is_tile_safe(next_pos):
                 dist = get_manhattan_distance(next_pos, target_pos)
@@ -254,7 +276,7 @@ class GhostAgent(BaseGhostAgent):
         if ghost_turn:
             max_eval = -float('inf')
             next_moves = []
-            for move in [Move.STAY, Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.STAY, Move.RIGHT, Move.DOWN, Move.UP, Move.LEFT]:
                 next_pos = (ghost_pos[0] + move.value[0], ghost_pos[1] + move.value[1])
                 if self.is_tile_valid(next_pos):
                     next_moves.append(next_pos)
@@ -306,7 +328,7 @@ class GhostAgent(BaseGhostAgent):
 
             # Evaluate moves favoring safe non-dead-end tiles if possible
             valid_moves = []
-            for move in [Move.STAY, Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
+            for move in [Move.STAY, Move.RIGHT, Move.DOWN, Move.UP, Move.LEFT]:
                 next_pos = (my_position[0] + move.value[0], my_position[1] + move.value[1])
                 if self.is_tile_valid(next_pos):
                     # Penalize dead-end tiles in score unless forced

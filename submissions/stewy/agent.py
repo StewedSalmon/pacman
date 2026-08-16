@@ -12,7 +12,7 @@ import numpy as np
 import random
 from collections import deque
 
-def get_mahattan_distance(pos1: tuple, pos2: tuple) -> int:
+def get_manhattan_distance(pos1: tuple, pos2: tuple) -> int:
     """Calculates the Manhattan distance between two positions."""
     return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
 
@@ -98,7 +98,7 @@ class PacmanAgent(BasePacmanAgent):
                 capture_path = path
             # calculate ticks   
             ticks = self.pacman_tick(capture_path)
-            manhattan_distance = get_mahattan_distance(ghost_position, pacman_position)
+            manhattan_distance = get_manhattan_distance(ghost_position, pacman_position)
             return (ticks * 10) + len(capture_path) + manhattan_distance * 0.1 # use path length and manhattan distance as tie breakers
         
         # minimizing for pacman
@@ -210,7 +210,7 @@ class PacmanAgent(BasePacmanAgent):
                 
                 if frontiers:
                     # Pick the frontier closest to the target corner
-                    best_frontier = min(frontiers, key=lambda f: get_mahattan_distance(f, target_corner))
+                    best_frontier = min(frontiers, key=lambda f: get_manhattan_distance(f, target_corner))
                     
                     # Reconstruct safe path to this frontier
                     path = []
@@ -457,7 +457,7 @@ class PacmanAgent(BasePacmanAgent):
                     if (r, c) in distances:
                         travel_cost = distances[(r, c)]
                     else:
-                        travel_cost = get_mahattan_distance(pos, (r, c))
+                        travel_cost = get_manhattan_distance(pos, (r, c))
                         
                     score = prob_mass - (LAMBDA * travel_cost)
                     
@@ -511,7 +511,7 @@ class PacmanAgent(BasePacmanAgent):
         for move, steps, landing_pos in options:
             if move == Move.STAY:
                 continue
-            dist = get_mahattan_distance(landing_pos, best_target)
+            dist = get_manhattan_distance(landing_pos, best_target)
                 
             # Tie-breaker: if distance is equal, prefer the move that takes more steps (sprinting)
             if dist < min_dist or (dist == min_dist and steps > best_steps):
@@ -674,6 +674,11 @@ class GhostAgent(BaseGhostAgent):
         
         self.previous_step = None
         
+        # for tracking
+        self.was_spotted = False
+        self.combat_log = []
+        self.last_known_self_pos = None
+        
     def get_BFS_map(self, start: tuple, safe_only=True):
         """Retrieves or calculates BFS map from start position"""
         if start in self.map_BFS_cache:
@@ -698,7 +703,7 @@ class GhostAgent(BaseGhostAgent):
     
     def minimax(self, ghost_position: tuple, pacman_position: tuple, map_state: np.ndarray, depth: int, alpha: int, beta: int, ghost_turn: bool):
         # base case
-        if get_mahattan_distance(ghost_position, pacman_position) < 2:
+        if get_manhattan_distance(ghost_position, pacman_position) < 2:
             return -1000 - depth
         
         if depth == 0:
@@ -896,7 +901,7 @@ class GhostAgent(BaseGhostAgent):
             
             # 4. Distance bonus: Keep moving generally away from last known
             if self.last_known_enemy_pos:
-                dist = get_mahattan_distance(next_pos, self.last_known_enemy_pos)
+                dist = get_manhattan_distance(next_pos, self.last_known_enemy_pos)
                 score += (dist * 0.5)
                 
             # Anti-stalling: Slightly penalize backtracking if we can avoid it
@@ -956,9 +961,9 @@ class GhostAgent(BaseGhostAgent):
         
         selected_target = None
         if self.config['target_area'] == 'furthest':
-            selected_target = max(valid_targets, key=lambda t: get_mahattan_distance(pos, t))
+            selected_target = max(valid_targets, key=lambda t: get_manhattan_distance(pos, t))
         elif self.config['target_area'] == 'closest':
-            selected_target = min(valid_targets, key=lambda t: get_mahattan_distance(pos, t))
+            selected_target = min(valid_targets, key=lambda t: get_manhattan_distance(pos, t))
         else:
             selected_target = random.choice(valid_targets)
             
@@ -970,34 +975,43 @@ class GhostAgent(BaseGhostAgent):
             return Move.STAY
             
         if self.config['post_arrival'] == 'wander':
-            valid_moves = []
-            for m in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
-                nr, nc = pos[0] + m.value[0], pos[1] + m.value[1]
-                if self.is_tile_safe((nr, nc)):
-                    valid_moves.append(m)
+            # --- DETERMINISTIC WALL-FOLLOWER (RIGHT-HAND RULE) ---
+            prev = getattr(self, 'previous_step', Move.STAY)
             
-            if valid_moves:
-                return random.choice(valid_moves)
+            # If we were standing still, pick a default momentum direction
+            if prev == Move.STAY:
+                prev = Move.UP
                 
-            # Failsafe: If the ONLY safe move is backward (e.g. entering a tight corner), take it
-            for m in [Move.UP, Move.DOWN, Move.LEFT, Move.RIGHT]:
-                nr, nc = pos[0] + m.value[0], pos[1] + m.value[1]
+            # Define priority: 1. Turn Right, 2. Straight, 3. Turn Left, 4. Reverse
+            if prev == Move.UP:
+                priority = [Move.RIGHT, Move.UP, Move.LEFT, Move.DOWN]
+            elif prev == Move.RIGHT:
+                priority = [Move.DOWN, Move.RIGHT, Move.UP, Move.LEFT]
+            elif prev == Move.DOWN:
+                priority = [Move.LEFT, Move.DOWN, Move.RIGHT, Move.UP]
+            elif prev == Move.LEFT:
+                priority = [Move.UP, Move.LEFT, Move.DOWN, Move.RIGHT]
+            else:
+                priority = [Move.RIGHT, Move.DOWN, Move.UP, Move.LEFT]
+                
+            for move in priority:
+                nr, nc = pos[0] + move.value[0], pos[1] + move.value[1]
+                # STRICT check: Only step on safe tiles (avoids dead-ends)
                 if self.is_tile_safe((nr, nc)):
-                    return m
+                    return move
+                    
+            # Failsafe
+            return Move.STAY
                 
         if self.config['post_arrival'] == 'loop':
-            # print("Loop mode")
             self.explored_waypoints.append(self.target_node)
-            # print("Explored: ")
             self.state = GhostState.TRANSIT
             self.target_node = self.pick_target_area(pos)
             
             transit_move = self.get_greedy_transit_move(pos, self.target_node)
-            # print("Move chosen: ", transit_move)
                             
-             # If we return STAY, we hit a wall/local minimum and greedy routing failed
             if transit_move == Move.STAY:
-                self.target_node = self.pick_target_area(pos) # Reroute
+                self.target_node = self.pick_target_area(pos) 
                 return Move.STAY
             else:
                 return transit_move
@@ -1015,7 +1029,7 @@ class GhostAgent(BaseGhostAgent):
             
             # STRICTLY check against explored_map == 0 (no -1 assumptions) and avoid dead ends
             if self.is_tile_safe(next_pos):
-                dist = get_mahattan_distance(next_pos, target_pos)
+                dist = get_manhattan_distance(next_pos, target_pos)
                 
                 # Slight penalty to prevent 180-degree backtracking if other options exist
                 if hasattr(self, 'previous_step') and move == self._get_reverse_move(self.previous_step):
@@ -1028,7 +1042,9 @@ class GhostAgent(BaseGhostAgent):
                     best_moves.append(move)
                     
         if best_moves:
-            return random.choice(best_moves)
+            priority = {Move.RIGHT: 1, Move.DOWN: 2, Move.UP: 3, Move.LEFT: 4}
+            best_moves.sort(key=lambda m: priority.get(m, 99))
+            return best_moves[0]
             
         return Move.STAY
 
@@ -1041,6 +1057,27 @@ class GhostAgent(BaseGhostAgent):
              my_position: tuple, 
              enemy_position: tuple,
              step_number: int) -> Move:
+        
+        # Save current position for the benchmark scraper
+        self.last_known_self_pos = my_position
+        
+        # --- COMBAT LOG / SIGHT FLIP TRACKER ---
+        is_spotted = enemy_position is not None
+        
+        if is_spotted and not self.was_spotted:
+            # Gained Sight
+            dist = get_manhattan_distance(my_position, enemy_position)
+            event = f"[Tick {step_number:03d}] CONTACT: Ghost {my_position} | Pacman {enemy_position} | Dist: {dist}"
+            self.combat_log.append(event)
+            print(event)  # Output to console during benchmark
+            
+        elif not is_spotted and self.was_spotted:
+            # Broke Line of Sight
+            event = f"[Tick {step_number:03d}] EVADED: Ghost broke line-of-sight at {my_position}"
+            self.combat_log.append(event)
+            print(event)  # Output to console during benchmark
+            
+        self.was_spotted = is_spotted
         
         self.map_BFS_cache.clear()
         self.update_explored_map(map_state)
@@ -1081,26 +1118,23 @@ class GhostAgent(BaseGhostAgent):
                 self.state = GhostState.TRANSIT
             
         if self.state == GhostState.TRANSIT:
-            if self.target_node is None or my_position == self.target_node:
+            if self.target_node is None:
                 self.target_node = self.pick_target_area(my_position)
                 
-            # print("Target: ", self.target_node)
-                
+            # Check for arrival first
             if my_position == self.target_node:
                 self.state = GhostState.ARRIVED
             else:
                 transit_move = self.get_greedy_transit_move(my_position, self.target_node)
                 
-                # If we return STAY, we hit a wall/local minimum and greedy routing failed
                 if transit_move == Move.STAY:
-                    self.target_node = self.pick_target_area(my_position) # Reroute
+                    self.target_node = self.pick_target_area(my_position)
                     chosen_action = Move.STAY
                 else:
                     chosen_action = transit_move
                     
         if self.state == GhostState.ARRIVED:
             chosen_action = self.execute_arrival_logic(my_position)
-            # print("Entering arrival logic")
         
         self.previous_step = chosen_action
         # print("Current position: ", my_position)

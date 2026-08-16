@@ -13,7 +13,7 @@ sys.path.insert(0, str(src_path))
 # Now we can import the original framework classes
 from arena import Arena
 
-def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
+def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False, replay_mode=False):
     print(f"Starting {num_runs} native runs: [{pacman_id}] vs [{ghost_id}]...\n")
     
     wins = 0
@@ -22,35 +22,63 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
     min_step = 200
     max_step = 0
     steps_list = []
-
-    # Optional: Suppress standard print statements from the framework to keep the console clean
-    # old_stdout = sys.stdout
-    # sys.stdout = open(os.devnull, 'w')
+    
+    # Initialize replay file if requested
+    replay_filename = f"replay_{pacman_id.replace('/', '_')}_vs_{ghost_id.replace('/', '_')}.txt"
+    if replay_mode:
+        with open(replay_filename, 'w') as f:
+            f.write(f"--- MATCHUP: {pacman_id} vs {ghost_id} ({num_runs} Runs) ---\n\n")
 
     for i in range(num_runs):
-        # CRITICAL: Create a completely fresh Arena object every single loop.
-        # This acts as our "memory wipe" so agents don't share state between games.
         arena = Arena(
             pacman_id=pacman_id,
             ghost_id=ghost_id,
-            submissions_dir="submissions", # Point to your submissions folder
+            submissions_dir="submissions",
             max_steps=200,
-            visualize=False,              # Disable visualizer for speed during benchmarks
+            visualize=False,
             delay=0.0,
             capture_distance_threshold=2,
             deterministic_starts=True,    
-            pacman_speed=2,                # Match your agent's speed
-            pacman_obs_radius=5,           # Enable 5-cell fog of war for Pacman
-            ghost_obs_radius=5             # Enable 5-cell fog of war for Ghost
+            pacman_speed=2,                
+            pacman_obs_radius=5,           
+            ghost_obs_radius=5             
         )
         
-        # Load fresh agent instances
         arena.load_agents()
-        
-        # Run the game and grab the returned stats dictionary directly
         result, stats = arena.run_game()
         
-        # Tally the results
+        # --- REPLAY EXTRACTION HACK ---
+        if replay_mode:
+            ghost_instance = None
+            # Scan the arena object for our GhostAgent by looking for the combat_log attribute
+            for attr in dir(arena):
+                obj = getattr(arena, attr)
+                if hasattr(obj, 'combat_log'):
+                    ghost_instance = obj
+                    break
+                    
+            if ghost_instance and hasattr(ghost_instance, 'combat_log'):
+                with open(replay_filename, 'a') as f:
+                    f.write(f"=== Game {i+1} (Ended at Tick {stats['total_steps']}) ===\n")
+                    if not ghost_instance.combat_log:
+                        f.write("No visual contact made during this game.\n")
+                    else:
+                        for log_entry in ghost_instance.combat_log:
+                            f.write(log_entry + "\n")
+                    f.write("\n")
+                    
+                    # --- NEW: FINAL COORDINATE TRACKER ---
+                    final_pos = getattr(ghost_instance, 'last_known_self_pos', 'Unknown')
+                    if result == 'pacman_wins':
+                        f.write(f"> FATAL: Ghost was cornered and eaten at {final_pos}\n")
+                    elif result == 'ghost_wins':
+                        f.write(f"> TIMEOUT: Ghost successfully survived at {final_pos}\n")
+                    else:
+                        f.write(f"> DRAW: Game ended at {final_pos}\n")
+                        
+                    f.write("\n")
+        # ------------------------------
+        
         if result == 'pacman_wins':
             wins += 1
         elif result == 'ghost_wins':
@@ -60,15 +88,9 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
         
         steps = stats['total_steps']
         steps_list.append(steps)
-        if steps < min_step:
-            min_step = steps
-        if steps > max_step:
-            max_step = steps
+        if steps < min_step: min_step = steps
+        if steps > max_step: max_step = steps
 
-    # Restore console printing if you suppressed it
-    # sys.stdout = old_stdout
-
-    # Calculate statistics
     win_rate = (wins / num_runs) * 100
     avg_steps = statistics.mean(steps_list) if steps_list else 0
     std_dev = statistics.stdev(steps_list) if len(steps_list) > 1 else 0
@@ -81,16 +103,13 @@ def run_native_benchmark(pacman_id, ghost_id, num_runs=50, save_csv=False):
     print(f"Step Variance (Std Dev): ±{std_dev:.1f}")
     print("="*40)
     
-    # Export to CSV if requested
     if save_csv:
         file_exists = os.path.isfile('benchmark_results.csv')
         with open('benchmark_results.csv', mode='a', newline='') as file:
             writer = csv.writer(file)
             if not file_exists:
-                # Write headers if the file is brand new
                 writer.writerow(['Pacman', 'Ghost', 'Runs', 'Win Rate (%)', 'Wins', 'Losses', 'Draws', 'Avg Steps', 'Max', 'Min', 'Std Dev'])
             writer.writerow([pacman_id, ghost_id, num_runs, round(win_rate, 2), wins, losses, draws, round(avg_steps, 2), max_step, min_step, round(std_dev, 2)])
-        print("\n Results saved to benchmark_results.csv")
 
 if __name__ == "__main__":
     # Set up argparse to handle command line inputs
@@ -101,7 +120,7 @@ if __name__ == "__main__":
     parser.add_argument('--hide', type=str, help="Folder name of the Ghost agent.")
     parser.add_argument('--runs', type=int, default=50, help="Number of games to simulate (default: 50).")
     parser.add_argument('--save', action='store_true', help="Flag to save results to a CSV file.")
-    
+    parser.add_argument('--replay', action='store_true', help="Write combat sight logs to a text file.")
     # The --all flag for the round-robin tournament
     parser.add_argument('--all', action='store_true', help="Run a full round-robin benchmark for manually specified agents.")
     
@@ -119,8 +138,8 @@ if __name__ == "__main__":
             # "Ablind",
             # "Cblind",
             "source_code/0",
-            "source_code/2",
-            "source_code/3",
+            # "source_code/2",
+            # "source_code/3",
             "source_code/4",
             "source_code/5",
             "source_code/6",
@@ -137,8 +156,8 @@ if __name__ == "__main__":
         ]
         
         ghost_names = [
-            # "stewy",
-            'gemini_fog' 
+            "stewy",
+            # 'gemini_fog' 
             # "kmy_fog",
             # "updated_thuy",
             # "namchan_fog",
@@ -175,7 +194,8 @@ if __name__ == "__main__":
                     pacman_id=pacman, 
                     ghost_id=ghost, 
                     num_runs=args.runs,
-                    save_csv=args.save
+                    save_csv=args.save,
+                    replay_mode=args.replay
                 )
         print("\n✅ Full benchmark complete!")
         
@@ -189,5 +209,6 @@ if __name__ == "__main__":
             pacman_id=args.seek, 
             ghost_id=args.hide, 
             num_runs=args.runs,
-            save_csv=args.save
+            save_csv=args.save,
+            replay_mode=args.replay
         )
